@@ -23,15 +23,21 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "constraints.h"
+#include "promises.h"
+#include "vars.h"
+#include "attributes.h"
+#include "cfstream.h"
+#include "fncall.h"
 
 static int ServicesSanityChecks(Attributes a, Promise *pp);
 static void SetServiceDefaults(Attributes *a);
-static void DoVerifyServices(Attributes a, Promise *pp);
+static void DoVerifyServices(Attributes a, Promise *pp, const ReportContext *report_context);
 
 /*****************************************************************************/
 
-void VerifyServicesPromise(Promise *pp)
+void VerifyServicesPromise(Promise *pp, const ReportContext *report_context)
 {
     Attributes a = { {0} };
 
@@ -41,7 +47,7 @@ void VerifyServicesPromise(Promise *pp)
 
     if (ServicesSanityChecks(a, pp))
     {
-        VerifyServices(a, pp);
+        VerifyServices(a, pp, report_context);
     }
 }
 
@@ -138,7 +144,7 @@ static void SetServiceDefaults(Attributes *a)
 /* Level                                                                     */
 /*****************************************************************************/
 
-void VerifyServices(Attributes a, Promise *pp)
+void VerifyServices(Attributes a, Promise *pp, const ReportContext *report_context)
 {
     CfLock thislock;
 
@@ -168,7 +174,7 @@ void VerifyServices(Attributes a, Promise *pp)
     }
     else
     {
-        DoVerifyServices(a, pp);
+        DoVerifyServices(a, pp, report_context);
     }
 
     DeleteScalar("this", "promiser");
@@ -179,7 +185,7 @@ void VerifyServices(Attributes a, Promise *pp)
 /* Level                                                                     */
 /*****************************************************************************/
 
-static void DoVerifyServices(Attributes a, Promise *pp)
+static void DoVerifyServices(Attributes a, Promise *pp, const ReportContext *report_context)
 {
     FnCall *default_bundle = NULL;
     Rlist *args = NULL;
@@ -195,6 +201,16 @@ static void DoVerifyServices(Attributes a, Promise *pp)
             AppendRlist(&args, "start", CF_SCALAR);
             break;
 
+        case cfsrv_restart:
+            AppendRlist(&args, pp->promiser, CF_SCALAR);
+            AppendRlist(&args, "restart", CF_SCALAR);
+            break;
+
+        case cfsrv_reload:
+            AppendRlist(&args, pp->promiser, CF_SCALAR);
+            AppendRlist(&args, "restart", CF_SCALAR);
+            break;
+            
         case cfsrv_stop:
         case cfsrv_disable:
         default:
@@ -206,7 +222,7 @@ static void DoVerifyServices(Attributes a, Promise *pp)
 
         default_bundle = NewFnCall("standard_services", args);
 
-        AppendConstraint(&(pp->conlist), "service_bundle", (Rval) {default_bundle, CF_FNCALL}, "any", false);
+        ConstraintAppendToPromise(pp, "service_bundle", (Rval) {default_bundle, CF_FNCALL}, "any", false);
         a.havebundle = true;
     }
 
@@ -218,6 +234,14 @@ static void DoVerifyServices(Attributes a, Promise *pp)
         NewScalar("this", "service_policy", "start", cf_str);
         break;
 
+    case cfsrv_restart:
+        NewScalar("this", "service_policy", "restart", cf_str);
+        break;
+
+    case cfsrv_reload:
+        NewScalar("this", "service_policy", "reload", cf_str);
+        break;
+        
     case cfsrv_stop:
     case cfsrv_disable:
     default:
@@ -225,13 +249,14 @@ static void DoVerifyServices(Attributes a, Promise *pp)
         break;
     }
 
-    if (default_bundle && GetBundle(default_bundle->name, "agent") == NULL)
+    if (default_bundle && GetBundle(PolicyFromPromise(pp), default_bundle->name, "agent") == NULL)
     {
         cfPS(cf_inform, CF_FAIL, "", pp, a, " !! Service %s could not be invoked successfully\n", pp->promiser);
     }
 
     if (!DONTDO)
     {
-        VerifyMethod("service_bundle", a, pp);  // Send list of classes to set privately?
+        VerifyMethod("service_bundle", a, pp, report_context);  // Send list of classes to set privately?
     }
 }
+

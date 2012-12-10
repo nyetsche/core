@@ -23,27 +23,89 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: nfs.c                                                               */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "files_operators.h"
+#include "item_lib.h"
+#include "conversion.h"
+#include "matching.h"
+#include "cfstream.h"
+#include "string_lib.h"
+#include "pipes.h"
 
 /* seconds */
 #define RPCTIMEOUT 60
 
 #ifndef MINGW
+
 static void AugmentMountInfo(Rlist **list, char *host, char *source, char *mounton, char *options);
 static int MatchFSInFstab(char *match);
 static void DeleteThisItem(Item **liststart, Item *entry);
-#endif
 
-/*******************************************************************/
+static const char *VMOUNTCOMM[HARD_CLASSES_MAX] =
+{
+    "",
+    "/sbin/mount -ea",          /* hpux */
+    "/usr/sbin/mount -t nfs",   /* aix */
+    "/bin/mount -va",           /* linux */
+    "/usr/sbin/mount -a",       /* solaris */
+    "/sbin/mount -va",          /* freebsd */
+    "/sbin/mount -a",           /* netbsd */
+    "/etc/mount -va",           /* cray */
+    "/bin/sh /etc/fstab",       /* NT - possible security issue */
+    "/sbin/mountall",           /* Unixware */
+    "/sbin/mount",              /* openbsd */
+    "/etc/mountall",            /* sco */
+    "/sbin/mount -va",          /* darwin */
+    "/bin/mount -v",            /* qnx */
+    "/sbin/mount -va",          /* dragonfly */
+    "mingw-invalid",            /* mingw */
+    "/bin/mount -a",            /* vmware */
+};
 
-#ifndef MINGW                   // use samba on windows ?
+static const char *VUNMOUNTCOMM[HARD_CLASSES_MAX] =
+{
+    "",
+    "/sbin/umount",             /* hpux */
+    "/usr/sbin/umount",         /* aix */
+    "/bin/umount",              /* linux */
+    "/etc/umount",              /* solaris */
+    "/sbin/umount",             /* freebsd */
+    "/sbin/umount",             /* netbsd */
+    "/etc/umount",              /* cray */
+    "/bin/umount",              /* NT */
+    "/sbin/umount",             /* Unixware */
+    "/sbin/umount",             /* openbsd */
+    "/etc/umount",              /* sco */
+    "/sbin/umount",             /* darwin */
+    "/bin/umount",              /* qnx */
+    "/sbin/umount",             /* dragonfly */
+    "mingw-invalid",            /* mingw */
+    "/bin/umount",              /* vmware */
+};
+
+static const char *VMOUNTOPTS[HARD_CLASSES_MAX] =
+{
+    "",
+    "bg,hard,intr",             /* hpux */
+    "bg,hard,intr",             /* aix */
+    "defaults",                 /* linux */
+    "bg,hard,intr",             /* solaris */
+    "bg,intr",                  /* freebsd */
+    "-i,-b",                    /* netbsd */
+    "bg,hard,intr",             /* cray */
+    "",                         /* NT */
+    "bg,hard,intr",             /* Unixware */
+    "-i,-b",                    /* openbsd */
+    "bg,hard,intr",             /* sco */
+    "-i,-b",                    /* darwin */
+    "bg,hard,intr",             /* qnx */
+    "bg,intr",                  /* dragonfly */
+    "mingw-invalid",            /* mingw */
+    "defaults",                 /* vmstate */
+};
 
 int LoadMountInfo(Rlist **list)
 /* This is, in fact, the most portable way to read the mount info! */
@@ -94,7 +156,7 @@ int LoadMountInfo(Rlist **list)
 
         sscanf(vbuff, "%s%s%s", buf1, buf2, buf3);
 
-        if (vbuff[0] == '\0' || vbuff[0] == '\n')
+        if ((vbuff[0] == '\0') || (vbuff[0] == '\n'))
         {
             break;
         }
@@ -110,12 +172,12 @@ int LoadMountInfo(Rlist **list)
             CfOut(cf_error, "", "Use the -n option to run safely.");
         }
 
-        if (strstr(vbuff, "retrying") || strstr(vbuff, "denied") || strstr(vbuff, "backgrounding"))
+        if ((strstr(vbuff, "retrying")) || (strstr(vbuff, "denied")) || (strstr(vbuff, "backgrounding")))
         {
             continue;
         }
 
-        if (strstr(vbuff, "exceeded") || strstr(vbuff, "busy"))
+        if ((strstr(vbuff, "exceeded")) || (strstr(vbuff, "busy")))
         {
             continue;
         }
@@ -132,24 +194,11 @@ int LoadMountInfo(Rlist **list)
         switch (VSYSTEMHARDCLASS)
         {
         case darwin:
-        case sun4:
-        case sun3:
-        case ultrx:
-        case irix:
-        case irix4:
-        case irix64:
         case linuxx:
-        case GnU:
         case unix_sv:
         case freebsd:
         case netbsd:
         case openbsd:
-        case bsd_i:
-        case nextstep:
-        case bsd4_3:
-        case newsos:
-        case aos:
-        case osf:
         case qnx:
         case crayos:
         case dragonfly:
@@ -199,9 +248,6 @@ int LoadMountInfo(Rlist **list)
         case cfnt:
             strcpy(mounton, buf2);
             strcpy(host, buf1);
-            break;
-        case unused2:
-        case unused3:
             break;
 
         case cfsco:
@@ -333,25 +379,19 @@ int VerifyInFstab(char *name, Attributes a, Promise *pp)
 
     switch (VSYSTEMHARDCLASS)
     {
-    case osf:
-    case bsd4_3:
-    case irix:
-    case irix4:
-    case irix64:
-    case sun3:
-    case aos:
-    case nextstep:
-    case newsos:
     case qnx:
-    case sun4:
         snprintf(fstab, CF_BUFSIZE, "%s:%s \t %s %s\t%s 0 0", host, rmountpt, mountpt, fstype, opts);
         break;
 
     case crayos:
-        snprintf(fstab, CF_BUFSIZE, "%s:%s \t %s %s\t%s", host, rmountpt, mountpt, ToUpperStr(fstype), opts);
+    {
+        char fstype_upper[CF_BUFSIZE];
+        strlcpy(fstype_upper, fstype, CF_BUFSIZE);
+        ToUpperStrInplace(fstype_upper);
+
+        snprintf(fstab, CF_BUFSIZE, "%s:%s \t %s %s\t%s", host, rmountpt, mountpt, fstype_upper, opts);
         break;
-    case ultrx:                //snprintf(fstab,CF_BUFSIZE,"%s@%s:%s:%s:0:0:%s:%s",rmountpt,host,mountpt,mode,fstype,opts);
-        break;
+    }
     case hp:
         snprintf(fstab, CF_BUFSIZE, "%s:%s %s \t %s \t %s 0 0", host, rmountpt, mountpt, fstype, opts);
         break;
@@ -360,14 +400,12 @@ int VerifyInFstab(char *name, Attributes a, Promise *pp)
                  "%s:\n\tdev\t= %s\n\ttype\t= %s\n\tvfs\t= %s\n\tnodename\t= %s\n\tmount\t= true\n\toptions\t= %s\n\taccount\t= false\n",
                  mountpt, rmountpt, fstype, fstype, host, opts);
         break;
-    case GnU:
     case linuxx:
         snprintf(fstab, CF_BUFSIZE, "%s:%s \t %s \t %s \t %s", host, rmountpt, mountpt, fstype, opts);
         break;
 
     case netbsd:
     case openbsd:
-    case bsd_i:
     case dragonfly:
     case freebsd:
         snprintf(fstab, CF_BUFSIZE, "%s:%s \t %s \t %s \t %s 0 0", host, rmountpt, mountpt, fstype, opts);
@@ -385,9 +423,6 @@ int VerifyInFstab(char *name, Attributes a, Promise *pp)
         CfOut(cf_error, "", "Don't understand filesystem format on SCO, no data - please fix me");
         break;
 
-    case unused1:
-    case unused2:
-    case unused3:
     default:
         free(opts);
         return false;
@@ -436,7 +471,7 @@ int VerifyNotInFstab(char *name, Attributes a, Promise *pp)
     }
     else
     {
-        opts = VMOUNTOPTS[VSYSTEMHARDCLASS];
+        opts = xstrdup(VMOUNTOPTS[VSYSTEMHARDCLASS]);
     }
 
     host = a.mount.mount_server;
@@ -513,15 +548,25 @@ int VerifyMount(char *name, Attributes a, Promise *pp)
 {
     char comm[CF_BUFSIZE], line[CF_BUFSIZE];
     FILE *pfp;
-    char *host, *rmountpt, *mountpt;
+    char *host, *rmountpt, *mountpt, *opts=NULL;
 
     host = a.mount.mount_server;
     rmountpt = a.mount.mount_source;
     mountpt = name;
 
+    /* Check for options required for this mount - i.e., -o ro,rsize, etc. */
+    if (a.mount.mount_options)
+    {
+        opts = Rlist2String(a.mount.mount_options, ",");
+    }
+    else
+    {
+        opts = xstrdup(VMOUNTOPTS[VSYSTEMHARDCLASS]);
+    }
+
     if (!DONTDO)
     {
-        snprintf(comm, CF_BUFSIZE, "%s %s:%s %s", GetArg0(VMOUNTCOMM[VSYSTEMHARDCLASS]), host, rmountpt, mountpt);
+        snprintf(comm, CF_BUFSIZE, "%s -o %s %s:%s %s", GetArg0(VMOUNTCOMM[VSYSTEMHARDCLASS]), opts, host, rmountpt, mountpt);
 
         if ((pfp = cf_popen(comm, "r")) == NULL)
         {
@@ -531,7 +576,7 @@ int VerifyMount(char *name, Attributes a, Promise *pp)
 
         CfReadLine(line, CF_BUFSIZE, pfp);
 
-        if (strstr(line, "busy") || strstr(line, "Busy"))
+        if ((strstr(line, "busy")) || (strstr(line, "Busy")))
         {
             cfPS(cf_inform, CF_INTERPT, "", pp, a, " !! The device under %s cannot be mounted\n", mountpt);
             cf_pclose(pfp);
@@ -540,6 +585,9 @@ int VerifyMount(char *name, Attributes a, Promise *pp)
 
         cf_pclose(pfp);
     }
+
+    /* Since opts is either Rlist2String or xstrdup'd, we need to always free it */
+    free(opts);
 
     cfPS(cf_inform, CF_CHG, "", pp, a, " -> Mounting %s to keep promise\n", mountpt);
     return 0;
@@ -567,7 +615,7 @@ int VerifyUnmount(char *name, Attributes a, Promise *pp)
 
         CfReadLine(line, CF_BUFSIZE, pfp);
 
-        if (strstr(line, "busy") || strstr(line, "Busy"))
+        if ((strstr(line, "busy")) || (strstr(line, "Busy")))
         {
             cfPS(cf_inform, CF_INTERPT, "", pp, a, " !! The device under %s cannot be unmounted\n", mountpt);
             cf_pclose(pfp);
@@ -663,7 +711,7 @@ void MountAll()
             break;
         }
 
-        if (strstr(line, "already mounted") || strstr(line, "exceeded") || strstr(line, "determined"))
+        if ((strstr(line, "already mounted")) || (strstr(line, "exceeded")) || (strstr(line, "determined")))
         {
             continue;
         }
@@ -673,13 +721,13 @@ void MountAll()
             continue;
         }
 
-        if (strstr(line, "denied") || strstr(line, "RPC"))
+        if ((strstr(line, "denied")) || (strstr(line, "RPC")))
         {
             CfOut(cf_error, "", "There was a mount error, trying to mount one of the filesystems on this host.\n");
             break;
         }
 
-        if (strstr(line, "trying") && !strstr(line, "NFS version 2") && !strstr(line, "vers 3"))
+        if ((strstr(line, "trying")) && (!strstr(line, "NFS version 2")) && (!strstr(line, "vers 3")))
         {
             CfOut(cf_error, "", "Attempting abort because mount went into a retry loop.\n");
             break;

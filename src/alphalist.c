@@ -22,8 +22,10 @@
   included file COSL.txt.
 */
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "alphalist.h"
+
+#include "item_lib.h"
+#include "matching.h"
 
 /*****************************************************************************/
 /* This library creates a simple indexed array of lists for optimization of
@@ -63,7 +65,7 @@ void DeleteAlphaList(AlphaList *al)
 
 /*****************************************************************************/
 
-AlphaList *CopyAlphaListPointers(AlphaList *ap, AlphaList *al)
+AlphaList *CopyAlphaListPointers(AlphaList *ap, const AlphaList *al)
 {
     if (ap != NULL)
     {
@@ -75,7 +77,29 @@ AlphaList *CopyAlphaListPointers(AlphaList *ap, AlphaList *al)
 
 /*****************************************************************************/
 
-int InAlphaList(AlphaList *al, const char *string)
+AlphaList *DupAlphaListPointers(AlphaList *ap, AlphaList *al)
+{
+    if (ap != NULL)
+    {
+        memcpy(ap, al, sizeof(AlphaList));
+    }
+
+    for (int i = 0; i < CF_ALPHABETSIZE; i++)
+    {
+        Item *tmp = NULL;
+        if (al->list[i])
+        {
+            CopyList(&tmp, al->list[i]);
+            al->list[i] = tmp;
+        }
+    }
+
+    return ap;
+}
+
+/*****************************************************************************/
+
+int InAlphaList(const AlphaList *al, const char *string)
 {
     int i = (int) *string;
 
@@ -84,7 +108,7 @@ int InAlphaList(AlphaList *al, const char *string)
 
 /*****************************************************************************/
 
-int MatchInAlphaList(AlphaList *al, char *string)
+int MatchInAlphaList(const AlphaList *al, const char *string)
 {
     Item *ip;
     int i = (int) *string;

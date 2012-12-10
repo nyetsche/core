@@ -6,7 +6,8 @@
 #include <assert.h>
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "assoc.h"
 
 /* Stubs */
 
@@ -110,6 +111,71 @@ static void test_rval_to_fncall2(void **state)
     assert_false(FnCallRvalValue(rval));
 }
 
+static void test_last(void **state)
+{
+    Rlist *l = NULL;
+    assert_true(RlistLast(l) == NULL);
+    AppendRlist(&l, "a", CF_SCALAR);
+    assert_string_equal("a", ScalarValue(RlistLast(l)));
+    AppendRlist(&l, "b", CF_SCALAR);
+    assert_string_equal("b", ScalarValue(RlistLast(l)));
+    DeleteRlist(l);
+}
+
+static bool is_even(void *item, void *data)
+{
+    int *d = data;
+
+    int *i = item;
+    return *i % 2 == *d;
+}
+
+static void test_filter(void **state)
+{
+    Rlist *list = NULL;
+    for (int i = 0; i < 10; i++)
+    {
+        void *item = xmemdup(&i, sizeof(int));
+        AppendRlistAlien(&list, item);
+    }
+
+    assert_int_equal(10, RlistLen(list));
+    int mod_by = 0;
+    RlistFilter(&list, is_even, &mod_by, free);
+    assert_int_equal(5, RlistLen(list));
+
+    int i = 0;
+    for (Rlist *rp = list; rp; rp = rp->next)
+    {
+        int *k = rp->item;
+        assert_int_equal(i, *k);
+
+        free(k);
+        rp->item = NULL;
+
+        i += 2;
+    }
+
+    DeleteRlist(list);
+}
+
+static void test_filter_everything(void **state)
+{
+    Rlist *list = NULL;
+    for (int i = 1; i < 10; i += 2)
+    {
+        void *item = xmemdup(&i, sizeof(int));
+        AppendRlistAlien(&list, item);
+    }
+
+    assert_int_equal(5, RlistLen(list));
+    int mod_by = 0;
+    RlistFilter(&list, is_even, &mod_by, free);
+    assert_int_equal(0, RlistLen(list));
+
+    assert_true(list == NULL);
+}
+
 int main()
 {
     const UnitTest tests[] =
@@ -124,6 +190,9 @@ int main()
         unit_test(test_rval_to_list2),
         unit_test(test_rval_to_fncall),
         unit_test(test_rval_to_fncall2),
+        unit_test(test_last),
+        unit_test(test_filter),
+        unit_test(test_filter_everything)
     };
 
     return run_tests(tests);
@@ -153,7 +222,7 @@ int ThreadUnlock(pthread_mutex_t *name)
 }
 #endif
 
-void ShowFnCall(FILE *fout, FnCall *fp)
+void ShowFnCall(FILE *fout, const FnCall *fp)
 {
     fail();
 }
@@ -163,7 +232,7 @@ void CfOut(enum cfreport level, const char *errstr, const char *fmt, ...)
     fail();
 }
 
-int IsNakedVar(char *str, char vtype)
+int IsNakedVar(const char *str, char vtype)
 {
     fail();
 }
@@ -173,12 +242,12 @@ int JoinSilent(char *path, const char *leaf, int bufsize)
     fail();
 }
 
-void FnCallPrint(Writer *writer, FnCall *fp)
+void FnCallPrint(Writer *writer, const FnCall *fp)
 {
     fail();
 }
 
-void GetNaked(char *s1, char *s2)
+void GetNaked(char *s1, const char *s2)
 {
     fail();
 }
@@ -198,7 +267,7 @@ CfAssoc *CopyAssoc(CfAssoc *old)
     fail();
 }
 
-FnCall *CopyFnCall(FnCall *f)
+FnCall *CopyFnCall(const FnCall *f)
 {
     fail();
 }
@@ -218,12 +287,12 @@ void DeleteFnCall(FnCall *fp)
     fail();
 }
 
-int PrintFnCall(char *buffer, int bufsize, FnCall *fp)
+int PrintFnCall(char *buffer, int bufsize, const FnCall *fp)
 {
     fail();
 }
 
-int SubStrnCopyChr(char *to, char *from, int len, char sep)
+int SubStrnCopyChr(char *to, const char *from, int len, char sep)
 {
     fail();
 }
@@ -233,12 +302,12 @@ int StartJoin(char *path, char *leaf, int bufsize)
     fail();
 }
 
-int BlockTextMatch(char *regexp, char *teststring, int *s, int *e)
+int BlockTextMatch(const char *regexp, const char *teststring, int *s, int *e)
 {
     fail();
 }
 
-JsonElement *FnCallToJson(FnCall *fp)
+JsonElement *FnCallToJson(const FnCall *fp)
 {
     fail();
 }

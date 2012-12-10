@@ -23,16 +23,16 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 
 #include "dir.h"
 #include "dir_priv.h"
+#include "item_lib.h"
 
 /*********************************************************************/
 
 Dir *OpenDirForPromise(const char *dirname, Attributes attr, Promise *pp)
 {
-    if (attr.copy.servers == NULL || strcmp(attr.copy.servers->item, "localhost") == 0)
+    if ((attr.copy.servers == NULL) || (strcmp(attr.copy.servers->item, "localhost") == 0))
     {
         return OpenDirLocal(dirname);
     }

@@ -22,14 +22,15 @@
   included file COSL.txt.
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: processes_select.c                                                  */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "env_context.h"
+#include "files_names.h"
+#include "conversion.h"
+#include "reporting.h"
+#include "matching.h"
+#include "cfstream.h"
+#include "verify_processes.h"
 
 static int SelectProcRangeMatch(char *name1, char *name2, int min, int max, char **names, char **line);
 static int SelectProcRegexMatch(char *name1, char *name2, char *regex, char **colNames, char **line);
@@ -140,11 +141,8 @@ int SelectProcess(char *procentry, char **names, int *start, int *end, Attribute
         PrependAlphaList(&proc_attr, "tty");
     }
 
-    if ((result = EvalProcessResult(a.process_select.process_result, &proc_attr)))
-    {
-        //ClassesFromString(fp->defines);
-    }
-
+    result = EvalProcessResult(a.process_select.process_result, &proc_attr);
+   
     DeleteAlphaList(&proc_attr);
 
     if (result)
@@ -176,7 +174,7 @@ static int SelectProcRangeMatch(char *name1, char *name2, int min, int max, char
     int i;
     long value;
 
-    if (min == CF_NOINT || max == CF_NOINT)
+    if ((min == CF_NOINT) || (max == CF_NOINT))
     {
         return false;
     }
@@ -192,7 +190,7 @@ static int SelectProcRangeMatch(char *name1, char *name2, int min, int max, char
             return false;
         }
 
-        if (min <= value && value <= max)
+        if ((min <= value) && (value <= max))
         {
             return true;
         }
@@ -207,12 +205,42 @@ static int SelectProcRangeMatch(char *name1, char *name2, int min, int max, char
 
 /***************************************************************************/
 
+static long TimeCounter2Int(const char *s)
+{
+    long d = 0, h = 0, m = 0;
+    char output[CF_BUFSIZE];
+
+    if (s == NULL)
+    {
+        return CF_NOINT;
+    }
+
+    if (strchr(s, '-'))
+    {
+        if (sscanf(s, "%ld-%ld:%ld", &d, &h, &m) != 3)
+        {
+            snprintf(output, CF_BUFSIZE, "Unable to parse TIME 'ps' field, expected dd-hh:mm, got '%s'", s);
+            ReportError(output);
+        }
+    }
+    else
+    {
+        if (sscanf(s, "%ld:%ld", &h, &m) != 2)
+        {
+            snprintf(output, CF_BUFSIZE, "Unable to parse TIME 'ps' field, expected hH:mm, got '%s'", s);
+            ReportError(output);
+        }
+    }
+
+    return 60 * (m + 60 * (h + 24 * d));
+}
+
 static int SelectProcTimeCounterRangeMatch(char *name1, char *name2, time_t min, time_t max, char **names, char **line)
 {
     int i;
     time_t value;
 
-    if (min == CF_NOINT || max == CF_NOINT)
+    if ((min == CF_NOINT) || (max == CF_NOINT))
     {
         return false;
     }
@@ -228,16 +256,16 @@ static int SelectProcTimeCounterRangeMatch(char *name1, char *name2, time_t min,
             return false;
         }
 
-        if (min <= value && value <= max)
+        if ((min <= value) && (value <= max))
         {
-            CfOut(cf_verbose, "", "Selection filter matched counter range %s/%s = %s in [%ld,%ld] (= %ld secs)\n",
-                  name1, name2, line[i], min, max, value);
+            CfOut(cf_verbose, "", "Selection filter matched counter range %s/%s = %s in [%jd,%jd] (= %jd secs)\n",
+                  name1, name2, line[i], (intmax_t)min, (intmax_t)max, (intmax_t)value);
             return true;
         }
         else
         {
-            CfDebug("Selection filter REJECTED counter range %s/%s = %s in [%ld,%ld] (= %ld secs)\n", name1, name2,
-                    line[i], min, max, value);
+            CfDebug("Selection filter REJECTED counter range %s/%s = %s in [%" PRIdMAX ",%" PRIdMAX "] (= %" PRIdMAX " secs)\n", name1, name2,
+                    line[i], (intmax_t)min, (intmax_t)max, (intmax_t)value);
             return false;
         }
     }
@@ -252,7 +280,7 @@ static int SelectProcTimeAbsRangeMatch(char *name1, char *name2, time_t min, tim
     int i;
     time_t value;
 
-    if (min == CF_NOINT || max == CF_NOINT)
+    if ((min == CF_NOINT) || (max == CF_NOINT))
     {
         return false;
     }
@@ -268,10 +296,10 @@ static int SelectProcTimeAbsRangeMatch(char *name1, char *name2, time_t min, tim
             return false;
         }
 
-        if (min <= value && value <= max)
+        if ((min <= value) && (value <= max))
         {
-            CfOut(cf_verbose, "", "Selection filter matched absolute %s/%s = %s in [%ld,%ld]\n", name1, name2, line[i],
-                  min, max);
+            CfOut(cf_verbose, "", "Selection filter matched absolute %s/%s = %s in [%jd,%jd]\n", name1, name2, line[i],
+                  (intmax_t)min, (intmax_t)max);
             return true;
         }
         else
@@ -322,7 +350,7 @@ static int SplitProcLine(char *proc, char **names, int *start, int *end, char **
 
     CfDebug("SplitProcLine(%s)\n", proc);
 
-    if (proc == NULL || strlen(proc) == 0)
+    if ((proc == NULL) || (strlen(proc) == 0))
     {
         return false;
     }
@@ -333,14 +361,14 @@ static int SplitProcLine(char *proc, char **names, int *start, int *end, char **
 
     sp = proc;
 
-    for (i = 0; i < CF_PROCCOLS && names[i] != NULL; i++)
+    for (i = 0; (i < CF_PROCCOLS) && (names[i] != NULL); i++)
     {
         while (*sp == ' ')
         {
             sp++;
         }
 
-        if (strcmp(names[i], "CMD") == 0 || strcmp(names[i], "COMMAND") == 0)
+        if ((strcmp(names[i], "CMD") == 0) || (strcmp(names[i], "COMMAND") == 0))
         {
             sscanf(sp, "%127[^\n]", cols1[i]);
             sp += strlen(cols1[i]);
@@ -352,7 +380,7 @@ static int SplitProcLine(char *proc, char **names, int *start, int *end, char **
         }
 
         // Some ps stimes may contain spaces, e.g. "Jan 25"
-        if (strcmp(names[i], "STIME") == 0 && strlen(cols1[i]) == 3)
+        if ((strcmp(names[i], "STIME") == 0) && (strlen(cols1[i]) == 3))
         {
             char s[CF_SMALLBUF] = { 0 };
             sscanf(sp, "%127s", s);
@@ -364,10 +392,10 @@ static int SplitProcLine(char *proc, char **names, int *start, int *end, char **
 
 // Now try looking at columne alignment
 
-    for (i = 0; i < CF_PROCCOLS && names[i] != NULL; i++)
+    for (i = 0; (i < CF_PROCCOLS) && (names[i] != NULL); i++)
     {
         // Start from the header/column tab marker and count backwards until we find 0 or space
-        for (s = start[i]; (s >= 0) && !isspace((int) *(proc + s)); s--)
+        for (s = start[i]; (s >= 0) && (!isspace((int) *(proc + s))); s--)
         {
         }
 
@@ -382,13 +410,13 @@ static int SplitProcLine(char *proc, char **names, int *start, int *end, char **
             s++;
         }
 
-        if (strcmp(names[i], "CMD") == 0 || strcmp(names[i], "COMMAND") == 0)
+        if ((strcmp(names[i], "CMD") == 0) || (strcmp(names[i], "COMMAND") == 0))
         {
             e = strlen(proc);
         }
         else
         {
-            for (e = end[i]; (e <= end[i] + 10) && !isspace((int) *(proc + e)); e++)
+            for (e = end[i]; (e <= end[i] + 10) && (!isspace((int) *(proc + e))); e++)
             {
             }
 
@@ -397,6 +425,11 @@ static int SplitProcLine(char *proc, char **names, int *start, int *end, char **
                 if (e > 0)
                 {
                     e--;
+                }
+
+                if(e == 0)
+                {
+                    break;
                 }
             }
         }

@@ -23,8 +23,14 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 #include "files_lib.h"
+
+#include "env_context.h"
+#include "promises.h"
+#include "vars.h"
+#include "conversion.h"
+#include "attributes.h"
+#include "cfstream.h"
 
 #ifndef HAVE_LIBVIRT
 
@@ -208,6 +214,11 @@ static void VerifyEnvironments(Attributes a, Promise *pp)
         envtype = cfv_virt_test;
         break;
 
+    case cfv_virt_vbox:
+        snprintf(hyper_uri, CF_MAXVARSIZE - 1, "vbox:///session");
+        envtype = cfv_virt_vbox;
+        break;
+
     case cfv_zone:
         snprintf(hyper_uri, CF_MAXVARSIZE - 1, "solaris_zone");
         envtype = cfv_zone;
@@ -221,7 +232,7 @@ static void VerifyEnvironments(Attributes a, Promise *pp)
 
     CfOut(cf_verbose, "", " -> Selecting environment type \"%s\" -> \"%s\"", a.env.type, hyper_uri);
 
-    if (!IsDefinedClass(a.env.host))
+    if (!IsDefinedClass(a.env.host, NULL))
     {
         switch (a.env.state)
         {
@@ -249,6 +260,7 @@ static void VerifyEnvironments(Attributes a, Promise *pp)
         case cfv_virt_xen:
         case cfv_virt_kvm:
         case cfv_virt_esx:
+        case cfv_virt_vbox:
         case cfv_virt_test:
             VerifyVirtDomain(hyper_uri, envtype, a, pp);
             break;
@@ -261,6 +273,24 @@ static void VerifyEnvironments(Attributes a, Promise *pp)
         case cfv_ec2:
             break;
         case cfv_eucalyptus:
+            break;
+        default:
+            break;
+        }
+        break;
+
+    case darwin:
+        switch (Str2Hypervisors(a.env.type))
+        {
+        case cfv_virt_vbox:
+        case cfv_virt_test:
+            VerifyVirtDomain(hyper_uri, envtype, a, pp);
+            break;
+        case cfv_virt_xen_net:
+        case cfv_virt_kvm_net:
+        case cfv_virt_esx_net:
+        case cfv_virt_test_net:
+            VerifyVirtNetwork(hyper_uri, envtype, a, pp);
             break;
         default:
             break;
@@ -296,9 +326,6 @@ static void VerifyVirtDomain(char *uri, enum cfhypervisors envtype, Attributes a
 
 /* set up the library error handler */
     virSetErrorFunc(NULL, (void *) EnvironmentErrorHandler);
-
-/* set up the signals handlers to catch disconnections */
-//vshSetupSignals();
 
     if (CFVC[envtype] == NULL)
     {
@@ -351,12 +378,6 @@ static void VerifyVirtNetwork(char *uri, enum cfhypervisors envtype, Attributes 
 {
     int num, i;
     char *networks[CF_MAX_CONCURRENT_ENVIRONMENTS];
-
-/* set up the library error handler */
-//virSetErrorFunc(NULL,EnvironmentErrorHandler);
-
-/* set up the signals handlers to catch disconnections */
-//vshSetupSignals();
 
     if (CFVC[envtype] == NULL)
     {

@@ -1,5 +1,6 @@
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "sysinfo.h"
 
 #include <setjmp.h>
 #include <cmockery.h>
@@ -43,7 +44,7 @@ ExpectedClasses expected_classes[] =
     {"laptop.intra"},
 };
 
-void NewClass(const char *classname)
+void HardClass(const char *classname)
 {
     int i;
 
@@ -170,11 +171,6 @@ Item *SplitString(const char *string, char sep)
     fail();
 }
 
-void Nova_SaveDocumentRoot(void)
-{
-    fail();
-}
-
 void Chop(char *str)
 {
     fail();
@@ -186,6 +182,11 @@ char *cf_ctime(const time_t *timep)
 }
 
 char *CanonifyName(const char *str)
+{
+    fail();
+}
+
+void CanonifyNameInPlace(char *str)
 {
     fail();
 }
@@ -230,7 +231,7 @@ char *HashPrint(enum cfhashes type, unsigned char digest[EVP_MAX_MD_SIZE + 1])
     fail();
 }
 
-void Unix_GetInterfaceInfo(enum cfagenttype ag)
+void Unix_GetInterfaceInfo(AgentType ag)
 {
     fail();
 }
@@ -255,7 +256,7 @@ bool IsDefinedClass(const char *class)
     fail();
 }
 
-void DeleteVariable(char *scope, char *id)
+void DeleteVariable(const char *scope, const char *id)
 {
     fail();
 }
@@ -265,7 +266,12 @@ Rlist *ParseShownRlist(char *string)
     fail();
 }
 
-void NewList(char *scope, char *lval, void *rval, enum cfdatatype dt)
+void NewList(const char *scope, const char *lval, void *rval, enum cfdatatype dt)
+{
+    fail();
+}
+
+void DeleteRlist(Rlist *list)
 {
     fail();
 }
@@ -273,21 +279,21 @@ void NewList(char *scope, char *lval, void *rval, enum cfdatatype dt)
 /* Stub out variables */
 
 int DEBUG;
-enum cfagenttype THIS_AGENT_TYPE;
+AgentType THIS_AGENT_TYPE;
 Item *IPADDRESSES;
 struct utsname VSYSNAME;
 enum classes VSYSTEMHARDCLASS;
 char CFWORKDIR[CF_BUFSIZE];
 char PUBKEY_DIGEST[CF_MAXVARSIZE];
 enum cfhashes CF_DEFAULT_DIGEST;
-char *CLASSATTRIBUTES[CF_CLASSATTR][CF_ATTRDIM];
-char *VFSTAB[1];
+char *CLASSATTRIBUTES[HARD_CLASSES_MAX][3];
+const char *VFSTAB[1];
 char *VRESOLVCONF[1];
 char *VMAILDIR[1];
 char *VEXPORTS[1];
 char EXPIRY[CF_SMALLBUF];
 RSA *PUBKEY;
-char *CLASSTEXT[1] = { };
+const char *CLASSTEXT[1] = { };
 
 char VIPADDRESS[18];
 

@@ -1,4 +1,3 @@
-
 /* 
    Copyright (C) Cfengine AS
 
@@ -25,33 +24,35 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "files_names.h"
+#include "addr_lib.h"
+#include "item_lib.h"
+#include "matching.h"
 
 /*******************************************************************/
 
-int PrintItemList(char *buffer, int bufsize, Item *list)
+int PrintItemList(char *buffer, int bufsize, const Item *list)
 {
-    Item *ip;
-
     StartJoin(buffer, "{", bufsize);
 
-    for (ip = list; ip != NULL; ip = ip->next)
+    for (const Item *ip = list; ip != NULL; ip = ip->next)
     {
         if (!JoinSilent(buffer, "'", bufsize))
         {
-            EndJoin(buffer, "...TRUNCATED'}", bufsize);
+            EndJoin(buffer, "'}", bufsize);
             return false;
         }
 
         if (!Join(buffer,ip->name,bufsize))
         {
-            EndJoin(buffer, "...TRUNCATED'}", bufsize);
+            EndJoin(buffer, "'}", bufsize);
             return false;
         }
 
         if (!JoinSilent(buffer, "'", bufsize))
         {
-            EndJoin(buffer, "...TRUNCATED'}", bufsize);
+            EndJoin(buffer, "'}", bufsize);
             return false;
         }
 
@@ -59,7 +60,7 @@ int PrintItemList(char *buffer, int bufsize, Item *list)
         {
             if (!JoinSilent(buffer, ",", bufsize))
             {
-                EndJoin(buffer, "...TRUNCATED}", bufsize);
+                EndJoin(buffer, "}", bufsize);
                 return false;
             }
         }
@@ -72,12 +73,11 @@ int PrintItemList(char *buffer, int bufsize, Item *list)
 
 /*********************************************************************/
 
-int ItemListSize(Item *list)
+int ItemListSize(const Item *list)
 {
     int size = 0;
-    Item *ip;
 
-    for (ip = list; ip != NULL; ip = ip->next)
+    for (const Item *ip = list; ip != NULL; ip = ip->next)
     {
         if (ip->name)
         {
@@ -112,7 +112,7 @@ Item *ReturnItemIn(Item *list, const char *item)
 
 /*********************************************************************/
 
-Item *ReturnItemInClass(Item *list, char *item, char *classes)
+Item *ReturnItemInClass(Item *list, const char *item, const char *classes)
 {
     Item *ptr;
 
@@ -123,7 +123,7 @@ Item *ReturnItemInClass(Item *list, char *item, char *classes)
 
     for (ptr = list; ptr != NULL; ptr = ptr->next)
     {
-        if (strcmp(ptr->name, item) == 0 && strcmp(ptr->classes, classes) == 0)
+        if ((strcmp(ptr->name, item) == 0) && (strcmp(ptr->classes, classes) == 0))
         {
             return ptr;
         }
@@ -155,12 +155,11 @@ Item *ReturnItemAtIndex(Item *list, int index)
 
 /*********************************************************************/
 
-int GetItemIndex(Item *list, char *item)
+int GetItemIndex(Item *list, const char *item)
 /*
  * Returns index of first occurence of item.
  */
 {
-    Item *ptr;
     int i = 0;
 
     if ((item == NULL) || (strlen(item) == 0))
@@ -168,7 +167,7 @@ int GetItemIndex(Item *list, char *item)
         return -1;
     }
 
-    for (ptr = list; ptr != NULL; ptr = ptr->next)
+    for (const Item *ptr = list; ptr != NULL; ptr = ptr->next)
     {
         if (strcmp(ptr->name, item) == 0)
         {
@@ -183,16 +182,14 @@ int GetItemIndex(Item *list, char *item)
 
 /*********************************************************************/
 
-bool IsItemIn(Item *list, const char *item)
+bool IsItemIn(const Item *list, const char *item)
 {
-    Item *ptr;
-
     if ((item == NULL) || (strlen(item) == 0))
     {
         return true;
     }
 
-    for (ptr = list; ptr != NULL; ptr = ptr->next)
+    for (const Item *ptr = list; ptr != NULL; ptr = ptr->next)
     {
         if (strcmp(ptr->name, item) == 0)
         {
@@ -219,11 +216,9 @@ Item *EndOfList(Item *start)
 
 /*********************************************************************/
 
-int IsItemInRegion(char *item, Item *begin_ptr, Item *end_ptr, Attributes a, Promise *pp)
+int IsItemInRegion(const char *item, const Item *begin_ptr, const Item *end_ptr, Attributes a, const Promise *pp)
 {
-    Item *ip;
-
-    for (ip = begin_ptr; (ip != end_ptr && ip != NULL); ip = ip->next)
+    for (const Item *ip = begin_ptr; ((ip != end_ptr) && (ip != NULL)); ip = ip->next)
     {
         if (MatchPolicy(item, ip->name, a, pp))
         {
@@ -253,7 +248,7 @@ Item *IdempPrependItem(Item **liststart, const char *itemstring, const char *cla
 
 /*********************************************************************/
 
-Item *IdempPrependItemClass(Item **liststart, char *itemstring, char *classes)
+Item *IdempPrependItemClass(Item **liststart, const char *itemstring, const char *classes)
 {
     Item *ip;
 
@@ -308,7 +303,7 @@ Item *PrependItem(Item **liststart, const char *itemstring, const char *classes)
 
 /*********************************************************************/
 
-void PrependFullItem(Item **liststart, char *itemstring, char *classes, int counter, time_t t)
+void PrependFullItem(Item **liststart, const char *itemstring, const char *classes, int counter, time_t t)
 {
     Item *ip;
 
@@ -356,7 +351,7 @@ void AppendItem(Item **liststart, const char *itemstring, const char *classes)
 
 /*********************************************************************/
 
-void PrependItemList(Item **liststart, char *itemstring)
+void PrependItemList(Item **liststart, const char *itemstring)
 {
     Item *ip = xcalloc(1, sizeof(Item));
 
@@ -367,14 +362,13 @@ void PrependItemList(Item **liststart, char *itemstring)
 
 /*********************************************************************/
 
-int ListLen(Item *list)
+int ListLen(const Item *list)
 {
     int count = 0;
-    Item *ip;
 
     CfDebug("Check ListLen\n");
 
-    for (ip = list; ip != NULL; ip = ip->next)
+    for (const Item *ip = list; ip != NULL; ip = ip->next)
     {
         count++;
     }
@@ -384,11 +378,9 @@ int ListLen(Item *list)
 
 /***************************************************************************/
 
-void CopyList(Item **dest, Item *source)
+void CopyList(Item **dest, const Item *source)
 /* Copy or concat lists */
 {
-    Item *ip;
-
     if (*dest != NULL)
     {
         FatalError("CopyList - list not initialized");
@@ -399,7 +391,7 @@ void CopyList(Item **dest, Item *source)
         return;
     }
 
-    for (ip = source; ip != NULL; ip = ip->next)
+    for (const Item *ip = source; ip != NULL; ip = ip->next)
     {
         AppendItem(dest, ip->name, ip->classes);
     }
@@ -458,9 +450,9 @@ int SelectItemMatching(Item *start, char *regex, Item *begin_ptr, Item *end_ptr,
         }
     }
 
-    if (*match != CF_UNDEFINED_ITEM && *prev == CF_UNDEFINED_ITEM)
+    if ((*match != CF_UNDEFINED_ITEM) && (*prev == CF_UNDEFINED_ITEM))
     {
-        for (ip = start; ip != NULL && ip != *match; ip = ip->next)
+        for (ip = start; (ip != NULL) && (ip != *match); ip = ip->next)
         {
             *prev = ip;
         }
@@ -471,14 +463,14 @@ int SelectItemMatching(Item *start, char *regex, Item *begin_ptr, Item *end_ptr,
 
 /*********************************************************************/
 
-int SelectNextItemMatching(char *regexp, Item *begin, Item *end, Item **match, Item **prev)
+int SelectNextItemMatching(const char *regexp, Item *begin, Item *end, Item **match, Item **prev)
 {
-    Item *ip, *ip_prev = CF_UNDEFINED_ITEM;
+    Item *ip_prev = CF_UNDEFINED_ITEM;
 
     *match = CF_UNDEFINED_ITEM;
     *prev = CF_UNDEFINED_ITEM;
 
-    for (ip = begin; ip != end; ip = ip->next)
+    for (Item *ip = begin; ip != end; ip = ip->next)
     {
         if (ip->name == NULL)
         {
@@ -500,7 +492,7 @@ int SelectNextItemMatching(char *regexp, Item *begin, Item *end, Item **match, I
 
 /*********************************************************************/
 
-int SelectLastItemMatching(char *regexp, Item *begin, Item *end, Item **match, Item **prev)
+int SelectLastItemMatching(const char *regexp, Item *begin, Item *end, Item **match, Item **prev)
 {
     Item *ip, *ip_last = NULL, *ip_prev = CF_UNDEFINED_ITEM;
 
@@ -534,18 +526,18 @@ int SelectLastItemMatching(char *regexp, Item *begin, Item *end, Item **match, I
 
 /*********************************************************************/
 
-int MatchRegion(char *chunk, Item *start, Item *begin, Item *end)
+int MatchRegion(const char *chunk, const Item *start, const Item *begin, const Item *end)
 /*
   Match a region in between the selection delimiters. It is
   called after SelectRegion. The end delimiter will be visible
-  here so we have to check for it.
+  here so we have to check for it. Can handle multi-line chunks
 */
 {
-    Item *ip = begin;
-    char *sp, buf[CF_BUFSIZE];
+    const Item *ip = begin;
+    char buf[CF_BUFSIZE];
     int lines = 0;
 
-    for (sp = chunk; sp <= chunk + strlen(chunk); sp++)
+    for (const char *sp = chunk; sp <= chunk + strlen(chunk); sp++)
     {
         memset(buf, 0, CF_BUFSIZE);
         sscanf(sp, "%[^\n]", buf);
@@ -594,11 +586,11 @@ int MatchRegion(char *chunk, Item *start, Item *begin, Item *end)
 /* Level                                                             */
 /*********************************************************************/
 
-void InsertAfter(Item **filestart, Item *ptr, char *string)
+void InsertAfter(Item **filestart, Item *ptr, const char *string)
 {
     Item *ip;
 
-    if (*filestart == NULL || ptr == CF_UNDEFINED_ITEM)
+    if ((*filestart == NULL) || (ptr == CF_UNDEFINED_ITEM))
     {
         AppendItem(filestart, string, NULL);
         return;
@@ -620,18 +612,16 @@ void InsertAfter(Item **filestart, Item *ptr, char *string)
 
 /*********************************************************************/
 
-int NeighbourItemMatches(Item *file_start, Item *location, char *string, enum cfeditorder pos, Attributes a,
-                         Promise *pp)
+int NeighbourItemMatches(const Item *file_start, const Item *location, const char *string, enum cfeditorder pos, Attributes a,
+                         const Promise *pp)
 {
-    Item *ip;
-
 /* Look for a line matching proposed insert before or after location */
 
-    for (ip = file_start; ip != NULL; ip = ip->next)
+    for (const Item *ip = file_start; ip != NULL; ip = ip->next)
     {
         if (pos == cfe_before)
         {
-            if (ip->next && ip->next == location)
+            if ((ip->next) && (ip->next == location))
             {
                 if (MatchPolicy(string, ip->name, a, pp))
                 {
@@ -648,7 +638,7 @@ int NeighbourItemMatches(Item *file_start, Item *location, char *string, enum cf
         {
             if (ip == location)
             {
-                if (ip->next && MatchPolicy(string, ip->next->name, a, pp))
+                if ((ip->next) && (MatchPolicy(string, ip->next->name, a, pp)))
                 {
                     return true;
                 }
@@ -712,19 +702,19 @@ Item *SplitString(const char *string, char sep)
 
 /*********************************************************************/
 
-Item *SplitStringAsItemList(char *string, char sep)
+Item *SplitStringAsItemList(const char *string, char sep)
  /* Splits a string containing a separator like : 
     into a linked list of separate items, */
 {
     Item *liststart = NULL;
-    char format[9], *sp;
+    char format[9];
     char node[CF_MAXVARSIZE];
 
     CfDebug("SplitStringAsItemList(%s,%c)\n", string, sep);
 
     sprintf(format, "%%255[^%c]", sep); /* set format string to search */
 
-    for (sp = string; *sp != '\0'; sp++)
+    for (const char *sp = string; *sp != '\0'; sp++)
     {
         memset(node, 0, CF_MAXVARSIZE);
         sscanf(sp, format, node);
@@ -749,9 +739,9 @@ Item *SplitStringAsItemList(char *string, char sep)
 
 /*********************************************************************/
 
-char *ItemList2CSV(Item *list)
+char *ItemList2CSV(const Item *list)
 {
-    Item *ip;
+    const Item *ip = NULL;
     int len = 0;
     char *s;
 
@@ -780,7 +770,7 @@ char *ItemList2CSV(Item *list)
 /* Basic operations                                                  */
 /*********************************************************************/
 
-void IncrementItemListCounter(Item *list, char *item)
+void IncrementItemListCounter(Item *list, const char *item)
 {
     Item *ptr;
 
@@ -801,7 +791,7 @@ void IncrementItemListCounter(Item *list, char *item)
 
 /*********************************************************************/
 
-void SetItemListCounter(Item *list, char *item, int value)
+void SetItemListCounter(Item *list, const char *item, int value)
 {
     Item *ptr;
 
@@ -822,7 +812,7 @@ void SetItemListCounter(Item *list, char *item, int value)
 
 /*********************************************************************/
 
-int IsMatchItemIn(Item *list, char *item)
+int IsMatchItemIn(Item *list, const char *item)
 /* Solve for possible regex/fuzzy models unified */
 {
     Item *ptr;
@@ -901,7 +891,7 @@ void DeleteItem(Item **liststart, Item *item)
         }
         else
         {
-            for (ip = *liststart; ip != NULL && ip->next != item && ip->next != NULL; ip = ip->next)
+            for (ip = *liststart; (ip != NULL) && (ip->next != item) && (ip->next != NULL); ip = ip->next)
             {
             }
 
@@ -917,11 +907,9 @@ void DeleteItem(Item **liststart, Item *item)
 
 /*********************************************************************/
 
-void DebugListItemList(Item *liststart)
+void DebugListItemList(const Item *liststart)
 {
-    Item *ptr;
-
-    for (ptr = liststart; ptr != NULL; ptr = ptr->next)
+    for (const Item *ptr = liststart; ptr != NULL; ptr = ptr->next)
     {
         if (ptr->classes)
         {
@@ -1042,14 +1030,14 @@ int DeleteItemGeneral(Item **list, const char *string, enum matchtypes type)
 
 /*********************************************************************/
 
-int DeleteItemStarting(Item **list, char *string)       /* delete 1st item starting with string */
+int DeleteItemStarting(Item **list, const char *string)       /* delete 1st item starting with string */
 {
     return DeleteItemGeneral(list, string, literalStart);
 }
 
 /*********************************************************************/
 
-int DeleteItemNotStarting(Item **list, char *string)    /* delete 1st item starting with string */
+int DeleteItemNotStarting(Item **list, const char *string)    /* delete 1st item starting with string */
 {
     return DeleteItemGeneral(list, string, NOTliteralStart);
 }
@@ -1063,28 +1051,28 @@ int DeleteItemLiteral(Item **list, const char *string)  /* delete 1st item which
 
 /*********************************************************************/
 
-int DeleteItemMatching(Item **list, char *string)       /* delete 1st item fully matching regex */
+int DeleteItemMatching(Item **list, const char *string)       /* delete 1st item fully matching regex */
 {
     return DeleteItemGeneral(list, string, regexComplete);
 }
 
 /*********************************************************************/
 
-int DeleteItemNotMatching(Item **list, char *string)    /* delete 1st item fully matching regex */
+int DeleteItemNotMatching(Item **list, const char *string)    /* delete 1st item fully matching regex */
 {
     return DeleteItemGeneral(list, string, NOTregexComplete);
 }
 
 /*********************************************************************/
 
-int DeleteItemContaining(Item **list, char *string)     /* delete first item containing string */
+int DeleteItemContaining(Item **list, const char *string)     /* delete first item containing string */
 {
     return DeleteItemGeneral(list, string, literalSomewhere);
 }
 
 /*********************************************************************/
 
-int DeleteItemNotContaining(Item **list, char *string)  /* delete first item containing string */
+int DeleteItemNotContaining(Item **list, const char *string)  /* delete first item containing string */
 {
     return DeleteItemGeneral(list, string, NOTliteralSomewhere);
 }

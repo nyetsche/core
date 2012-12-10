@@ -23,13 +23,40 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
 #include "monitoring.h"
+#include "item_lib.h"
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "files_operators.h"
+#include "cfstream.h"
+#include "pipes.h"
 
 /* Globals */
 
 Item *ALL_INCOMING;
-Item *MON_TCP4 = NULL, *MON_TCP6 = NULL;
+Item *MON_UDP4 = NULL, *MON_UDP6 = NULL, *MON_TCP4 = NULL, *MON_TCP6 = NULL;
+
+static const char *VNETSTAT[HARD_CLASSES_MAX] =
+{
+    "-",
+    "/usr/bin/netstat -rn",     /* hpux */
+    "/usr/bin/netstat -rn",     /* aix */
+    "/bin/netstat -rn",         /* linux */
+    "/usr/bin/netstat -rn",     /* solaris */
+    "/usr/bin/netstat -rn",     /* freebsd */
+    "/usr/bin/netstat -rn",     /* netbsd */
+    "/usr/ucb/netstat -rn",     /* cray */
+    "/cygdrive/c/WINNT/System32/netstat",       /* NT */
+    "/usr/bin/netstat -rn",     /* Unixware */
+    "/usr/bin/netstat -rn",     /* openbsd */
+    "/usr/bin/netstat -rn",     /* sco */
+    "/usr/sbin/netstat -rn",    /* darwin */
+    "/usr/bin/netstat -rn",     /* qnx */
+    "/usr/bin/netstat -rn",     /* dragonfly */
+    "mingw-invalid",            /* mingw */
+    "/usr/bin/netstat",         /* vmware */
+};
 
 /* Implementation */
 
@@ -38,8 +65,10 @@ void MonNetworkInit(void)
  
     DeleteItemList(MON_TCP4);
     DeleteItemList(MON_TCP6);
+    DeleteItemList(MON_UDP4);
+    DeleteItemList(MON_UDP6);
  
-    MON_TCP4 = MON_TCP6 = NULL;
+    MON_UDP4 = MON_UDP6 = MON_TCP4 = MON_TCP6 = NULL;
 
     for (int i = 0; i < ATTR; i++)
     {
@@ -82,8 +111,9 @@ static void SetNetworkEntropyClasses(const char *service, const char *direction,
             }
 
             strncpy(vbuff, remote, CF_BUFSIZE - 1);
+            vbuff[CF_BUFSIZE-1] = '\0';
 
-            for (sp = vbuff + strlen(vbuff) - 1; isdigit((int) *sp); sp--)
+            for (sp = vbuff + strlen(vbuff) - 1; isdigit((int) *sp) && (sp > vbuff); sp--)
             {
             }
 
@@ -114,7 +144,7 @@ void MonNetworkGatherData(double *cf_this)
     int i;
     char vbuff[CF_BUFSIZE];
     enum cf_netstat_type { cfn_new, cfn_old } type = cfn_new;
-    enum cf_packet_type { cfn_tcp4, cfn_tcp6 } packet = cfn_tcp4;
+    enum cf_packet_type { cfn_udp4, cfn_udp6, cfn_tcp4, cfn_tcp6} packet = cfn_tcp4;
 
     CfDebug("GatherSocketData()\n");
 
@@ -147,7 +177,7 @@ void MonNetworkGatherData(double *cf_this)
             break;
         }
 
-        if (!(strstr(vbuff, ":") || strstr(vbuff, ".")))
+        if (!((strstr(vbuff, ":")) || (strstr(vbuff, "."))))
         {
             continue;
         }
@@ -156,13 +186,25 @@ void MonNetworkGatherData(double *cf_this)
 
         // If this is old style, we look for chapter headings, e.g. "TCP: IPv4"
 
-        if (strncmp(vbuff,"TCP:",4) == 0 && strstr(vbuff+4,"6"))
+        if ((strncmp(vbuff,"UDP:",4) == 0) && (strstr(vbuff+4,"6")))
+        {
+            packet = cfn_udp6;
+            type = cfn_old;
+            continue;
+        }
+        else if ((strncmp(vbuff,"TCP:",4) == 0) && (strstr(vbuff+4,"6")))
         {
             packet = cfn_tcp6;
             type = cfn_old;
             continue;
         }
-        else if (strncmp(vbuff,"TCP:",4) == 0 && strstr(vbuff+4,"4"))
+        else if ((strncmp(vbuff,"UDP:",4) == 0) && (strstr(vbuff+4,"4")))
+        {
+            packet = cfn_udp4;
+            type = cfn_old;
+            continue;
+        }
+        else if ((strncmp(vbuff,"TCP:",4) == 0) && (strstr(vbuff+4,"4")))
         {
             packet = cfn_tcp4;
             type = cfn_old;
@@ -171,9 +213,19 @@ void MonNetworkGatherData(double *cf_this)
 
         // Line by line state in modern/linux output
 
-        if (strncmp(vbuff,"tcp6",4) == 0)
+        if (strncmp(vbuff,"udp6",4) == 0)
+        {
+            packet = cfn_udp6;
+            type = cfn_new;
+        }
+        else if (strncmp(vbuff,"tcp6",4) == 0)
         {
             packet = cfn_tcp6;
+            type = cfn_new;
+        }
+        else if (strncmp(vbuff,"udp",3) == 0)
+        {
+            packet = cfn_udp4;
             type = cfn_new;
         }
         else if (strncmp(vbuff,"tcp",3) == 0)
@@ -200,7 +252,7 @@ void MonNetworkGatherData(double *cf_this)
         }
 
         // Extract the port number from the end of the string
-        
+
         for (sp = local + strlen(local); (*sp != '.') && (*sp != ':')  && (sp > local); sp--)
         {
         }
@@ -208,6 +260,8 @@ void MonNetworkGatherData(double *cf_this)
         *sp = '\0'; // Separate address from port number
         sp++;
 
+        char *localport = sp;
+        
         if (strstr(vbuff, "LISTEN"))
         {
             // General bucket
@@ -218,11 +272,17 @@ void MonNetworkGatherData(double *cf_this)
 
             switch (packet)
             {
+            case cfn_udp4:
+                IdempPrependItem(&MON_UDP4, sp, local);
+                break;
+            case cfn_udp6:
+                IdempPrependItem(&MON_UDP6, sp, local);
+                break;
             case cfn_tcp4:
-                IdempPrependItem(&MON_TCP4, sp, local);
+                IdempPrependItem(&MON_TCP4, localport, local);
                 break;
             case cfn_tcp6:
-                IdempPrependItem(&MON_TCP6, sp, local);
+                IdempPrependItem(&MON_TCP6, localport, local);
                 break;
             default:
                 break;
@@ -232,40 +292,29 @@ void MonNetworkGatherData(double *cf_this)
 
         // Now look at outgoing
         
-        for (sp = remote + strlen(remote); (sp >= remote) && !isdigit((int) *sp); sp--)
+        for (sp = remote + strlen(remote) - 1; (sp >= remote) && (isdigit((int) *sp)); sp--)
         {
         }
 
         sp++;
+        char *remoteport = sp;
 
         // Now look for the specific vital signs to count frequencies
-        
+            
         for (i = 0; i < ATTR; i++)
         {
-            char *spend;
-
-            for (spend = local + strlen(local) - 1; isdigit((int) *spend); spend--)
-            {
-            }
-
-            spend++;
-
-            if (strcmp(spend, ECGSOCKS[i].portnr) == 0)
+            if (strcmp(localport, ECGSOCKS[i].portnr) == 0)
             {
                 cf_this[ECGSOCKS[i].in]++;
                 AppendItem(&in[i], vbuff, "");
+
             }
 
-            for (spend = remote + strlen(remote) - 1; (sp >= remote) && isdigit((int) *spend); spend--)
-            {
-            }
-
-            spend++;
-
-            if (strcmp(spend, ECGSOCKS[i].portnr) == 0)
+            if (strcmp(remoteport, ECGSOCKS[i].portnr) == 0)
             {
                 cf_this[ECGSOCKS[i].out]++;
                 AppendItem(&out[i], vbuff, "");
+
             }
         }
     }
@@ -293,7 +342,7 @@ void MonNetworkGatherData(double *cf_this)
             }
         }
 
-        SetNetworkEntropyClasses(ECGSOCKS[i].name, "in", in[i]);
+        SetNetworkEntropyClasses(CanonifyName(ECGSOCKS[i].name), "in", in[i]);
         RawSaveItemList(in[i], vbuff);
         DeleteItemList(in[i]);
         CfDebug("Saved in netstat data in %s\n", vbuff);
@@ -317,7 +366,7 @@ void MonNetworkGatherData(double *cf_this)
             }
         }
 
-        SetNetworkEntropyClasses(ECGSOCKS[i].name, "out", out[i]);
+        SetNetworkEntropyClasses(CanonifyName(ECGSOCKS[i].name), "out", out[i]);
         RawSaveItemList(out[i], vbuff);
         CfDebug("Saved out netstat data in %s\n", vbuff);
         DeleteItemList(out[i]);

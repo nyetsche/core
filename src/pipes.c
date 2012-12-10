@@ -23,96 +23,13 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: pipes.c                                                             */
-/*                                                                           */
-/*****************************************************************************/
+#include "pipes.h"
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "cfstream.h"
 
 #ifndef MINGW
-static FILE *Unix_cf_popen(char *command, char *type);
-static FILE *Unix_cf_popensetuid(char *command, char *type, uid_t uid, gid_t gid, char *chdirv, char *chrootv);
-static FILE *Unix_cf_popen_sh(char *command, char *type);
-static FILE *Unix_cf_popen_shsetuid(char *command, char *type, uid_t uid, gid_t gid, char *chdirv, char *chrootv);
-static int Unix_cf_pclose(FILE *pp);
-static int Unix_cf_pclose_def(FILE *pfp, Attributes a, Promise *pp);
 static int CfSetuid(uid_t uid, gid_t gid);
 #endif
-
-/*******************************************************************/
-/* Pipe API - OS function mapping                                  */
-/*******************************************************************/
-
-FILE *cf_popen(char *command, char *type)
-{
-#ifdef MINGW
-    return NovaWin_cf_popen(command, type);
-#else
-    return Unix_cf_popen(command, type);
-#endif
-}
-
-/*****************************************************************************/
-
-FILE *cf_popensetuid(char *command, char *type, uid_t uid, gid_t gid, char *chdirv, char *chrootv, int background)
-{
-#ifdef MINGW
-    return NovaWin_cf_popensetuid(command, type, uid, gid, chdirv, chrootv, background);
-#else
-    return Unix_cf_popensetuid(command, type, uid, gid, chdirv, chrootv);
-#endif
-}
-
-/*****************************************************************************/
-
-FILE *cf_popen_sh(char *command, char *type)
-{
-#ifdef MINGW
-    return NovaWin_cf_popen_sh(command, type);
-#else
-    return Unix_cf_popen_sh(command, type);
-#endif
-}
-
-/*****************************************************************************/
-
-FILE *cf_popen_shsetuid(char *command, char *type, uid_t uid, gid_t gid, char *chdirv, char *chrootv, int background)
-{
-#ifdef MINGW
-    return NovaWin_cf_popen_shsetuid(command, type, uid, gid, chdirv, chrootv, background);
-#else
-    return Unix_cf_popen_shsetuid(command, type, uid, gid, chdirv, chrootv);
-#endif
-}
-
-/*****************************************************************************/
-
-int cf_pclose(FILE *pp)
-{
-#ifdef MINGW
-    return NovaWin_cf_pclose(pp);
-#else
-    return Unix_cf_pclose(pp);
-#endif
-}
-
-/*****************************************************************************/
-
-int cf_pclose_def(FILE *pfp, Attributes a, Promise *pp)
-{
-#ifdef MINGW
-    return NovaWin_cf_pclose_def(pfp, a, pp);
-#else
-    return Unix_cf_pclose_def(pfp, a, pp);
-#endif
-}
-
-/*******************************************************************/
-/* End pipe API                                                    */
-/*******************************************************************/
 
 int VerifyCommandRetcode(int retcode, int fallback, Attributes a, Promise *pp)
 {
@@ -120,7 +37,7 @@ int VerifyCommandRetcode(int retcode, int fallback, Attributes a, Promise *pp)
     int result = true;
     int matched = false;
 
-    if (a.classes.retcode_kept || a.classes.retcode_repaired || a.classes.retcode_failed)
+    if ((a.classes.retcode_kept) || (a.classes.retcode_repaired) || (a.classes.retcode_failed))
     {
 
         snprintf(retcodeStr, sizeof(retcodeStr), "%d", retcode);
@@ -182,10 +99,6 @@ int VerifyCommandRetcode(int retcode, int fallback, Attributes a, Promise *pp)
 
 #ifndef MINGW
 
-/*******************************************************************/
-/* Unix implementations                                            */
-/*******************************************************************/
-
 /*****************************************************************************/
 
 pid_t *CHILDREN;
@@ -193,16 +106,16 @@ int MAX_FD = 128;               /* Max number of simultaneous pipes */
 
 /*****************************************************************************/
 
-static FILE *Unix_cf_popen(char *command, char *type)
+FILE *cf_popen(const char *command, char *type)
 {
     int i, pd[2];
     char **argv;
     pid_t pid;
     FILE *pp = NULL;
 
-    CfDebug("Unix_cf_popen(%s)\n", command);
+    CfDebug("cf_popen(%s)\n", command);
 
-    if ((*type != 'r' && *type != 'w') || (type[1] != '\0'))
+    if (((*type != 'r') && (*type != 'w')) || (type[1] != '\0'))
     {
         errno = EINVAL;
         return NULL;
@@ -310,7 +223,7 @@ static FILE *Unix_cf_popen(char *command, char *type)
         if (fileno(pp) >= MAX_FD)
         {
             CfOut(cf_error, "",
-                  "File descriptor %d of child %jd higher than MAX_FD in Unix_cf_popen, check for defunct children",
+                  "File descriptor %d of child %jd higher than MAX_FD in cf_popen, check for defunct children",
                   fileno(pp), (intmax_t)pid);
         }
         else
@@ -328,16 +241,16 @@ static FILE *Unix_cf_popen(char *command, char *type)
 
 /*****************************************************************************/
 
-static FILE *Unix_cf_popensetuid(char *command, char *type, uid_t uid, gid_t gid, char *chdirv, char *chrootv)
+FILE *cf_popensetuid(const char *command, char *type, uid_t uid, gid_t gid, char *chdirv, char *chrootv, int background)
 {
     int i, pd[2];
     char **argv;
     pid_t pid;
     FILE *pp = NULL;
 
-    CfDebug("Unix_cf_popensetuid(%s,%s,%ju,%ju)\n", command, type, (uintmax_t)uid, (uintmax_t)gid);
+    CfDebug("cf_popensetuid(%s,%s,%" PRIuMAX ",%" PRIuMAX ")\n", command, type, (uintmax_t)uid, (uintmax_t)gid);
 
-    if ((*type != 'r' && *type != 'w') || (type[1] != '\0'))
+    if (((*type != 'r') && (*type != 'w')) || (type[1] != '\0'))
     {
         errno = EINVAL;
         return NULL;
@@ -408,7 +321,7 @@ static FILE *Unix_cf_popensetuid(char *command, char *type, uid_t uid, gid_t gid
 
         argv = ArgSplitCommand(command);
 
-        if (chrootv && strlen(chrootv) != 0)
+        if (chrootv && (strlen(chrootv) != 0))
         {
             if (chroot(chrootv) == -1)
             {
@@ -418,7 +331,7 @@ static FILE *Unix_cf_popensetuid(char *command, char *type, uid_t uid, gid_t gid
             }
         }
 
-        if (chdirv && strlen(chdirv) != 0)
+        if (chdirv && (strlen(chdirv) != 0))
         {
             if (chdir(chdirv) == -1)
             {
@@ -469,7 +382,7 @@ static FILE *Unix_cf_popensetuid(char *command, char *type, uid_t uid, gid_t gid
         if (fileno(pp) >= MAX_FD)
         {
             CfOut(cf_error, "",
-                  "File descriptor %d of child %jd higher than MAX_FD in Unix_cf_popensetuid, check for defunct children",
+                  "File descriptor %d of child %jd higher than MAX_FD in cf_popensetuid, check for defunct children",
                   fileno(pp), (intmax_t)pid);
         }
         else
@@ -489,15 +402,15 @@ static FILE *Unix_cf_popensetuid(char *command, char *type, uid_t uid, gid_t gid
 /* Shell versions of commands - not recommended for security reasons         */
 /*****************************************************************************/
 
-static FILE *Unix_cf_popen_sh(char *command, char *type)
+FILE *cf_popen_sh(const char *command, char *type)
 {
     int i, pd[2];
     pid_t pid;
     FILE *pp = NULL;
 
-    CfDebug("Unix_cf_popen_sh(%s)\n", command);
+    CfDebug("cf_popen_sh(%s)\n", command);
 
-    if ((*type != 'r' && *type != 'w') || (type[1] != '\0'))
+    if (((*type != 'r') && (*type != 'w')) || (type[1] != '\0'))
     {
         errno = EINVAL;
         return NULL;
@@ -598,7 +511,7 @@ static FILE *Unix_cf_popen_sh(char *command, char *type)
         if (fileno(pp) >= MAX_FD)
         {
             CfOut(cf_error, "",
-                  "File descriptor %d of child %jd higher than MAX_FD in Unix_cf_popen_sh, check for defunct children",
+                  "File descriptor %d of child %jd higher than MAX_FD in cf_popen_sh, check for defunct children",
                   fileno(pp), (intmax_t)pid);
         }
         else
@@ -616,15 +529,15 @@ static FILE *Unix_cf_popen_sh(char *command, char *type)
 
 /******************************************************************************/
 
-static FILE *Unix_cf_popen_shsetuid(char *command, char *type, uid_t uid, gid_t gid, char *chdirv, char *chrootv)
+FILE *cf_popen_shsetuid(const char *command, char *type, uid_t uid, gid_t gid, char *chdirv, char *chrootv, int background)
 {
     int i, pd[2];
     pid_t pid;
     FILE *pp = NULL;
 
-    CfDebug("Unix_cf_popen_shsetuid(%s,%s,%ju,%ju)\n", command, type, (uintmax_t)uid, (uintmax_t)gid);
+    CfDebug("cf_popen_shsetuid(%s,%s,%" PRIuMAX ",%" PRIuMAX ")\n", command, type, (uintmax_t)uid, (uintmax_t)gid);
 
-    if ((*type != 'r' && *type != 'w') || (type[1] != '\0'))
+    if (((*type != 'r') && (*type != 'w')) || (type[1] != '\0'))
     {
         errno = EINVAL;
         return NULL;
@@ -693,7 +606,7 @@ static FILE *Unix_cf_popen_shsetuid(char *command, char *type, uid_t uid, gid_t 
             }
         }
 
-        if (chrootv && strlen(chrootv) != 0)
+        if (chrootv && (strlen(chrootv) != 0))
         {
             if (chroot(chrootv) == -1)
             {
@@ -702,7 +615,7 @@ static FILE *Unix_cf_popen_shsetuid(char *command, char *type, uid_t uid, gid_t 
             }
         }
 
-        if (chdirv && strlen(chdirv) != 0)
+        if (chdirv && (strlen(chdirv) != 0))
         {
             if (chdir(chdirv) == -1)
             {
@@ -748,7 +661,7 @@ static FILE *Unix_cf_popen_shsetuid(char *command, char *type, uid_t uid, gid_t 
         if (fileno(pp) >= MAX_FD)
         {
             CfOut(cf_error, "",
-                  "File descriptor %d of child %jd higher than MAX_FD in Unix_cf_popen_shsetuid, check for defunct children",
+                  "File descriptor %d of child %jd higher than MAX_FD in cf_popen_shsetuid, check for defunct children",
                   fileno(pp), (intmax_t)pid);
             cf_pwait(pid);
             return NULL;
@@ -765,15 +678,11 @@ static FILE *Unix_cf_popen_shsetuid(char *command, char *type, uid_t uid, gid_t 
     return NULL;
 }
 
-/******************************************************************************/
-/* Close commands                                                             */
-/******************************************************************************/
-
 int cf_pwait(pid_t pid)
 {
     int status;
 
-    CfDebug("cf_pwait - Waiting for process %jd\n", (intmax_t)pid);
+    CfDebug("cf_pwait - Waiting for process %" PRIdMAX "\n", (intmax_t)pid);
 
 # ifdef HAVE_WAITPID
 
@@ -819,12 +728,12 @@ int cf_pwait(pid_t pid)
 
 /*******************************************************************/
 
-static int Unix_cf_pclose(FILE *pp)
+int cf_pclose(FILE *pp)
 {
     int fd;
     pid_t pid;
 
-    CfDebug("Unix_cf_pclose(pp)\n");
+    CfDebug("cf_pclose(pp)\n");
 
     if (!ThreadLock(cft_count))
     {
@@ -845,7 +754,7 @@ static int Unix_cf_pclose(FILE *pp)
     if (fd >= MAX_FD)
     {
         CfOut(cf_error, "",
-              "File descriptor %d of child higher than MAX_FD in Unix_cf_pclose, check for defunct children", fd);
+              "File descriptor %d of child higher than MAX_FD in cf_pclose, check for defunct children", fd);
         pid = -1;
     }
     else
@@ -870,7 +779,7 @@ static int Unix_cf_pclose(FILE *pp)
 
 /*******************************************************************/
 
-static int Unix_cf_pclose_def(FILE *pfp, Attributes a, Promise *pp)
+int cf_pclose_def(FILE *pfp, Attributes a, Promise *pp)
 /**
  * Defines command failure/success with cfPS based on exit code.
  */
@@ -878,7 +787,7 @@ static int Unix_cf_pclose_def(FILE *pfp, Attributes a, Promise *pp)
     int fd, status;
     pid_t pid;
 
-    CfDebug("Unix_cf_pclose_def(pfp)\n");
+    CfDebug("cf_pclose_def(pfp)\n");
 
     if (!ThreadLock(cft_count))
     {
@@ -899,7 +808,7 @@ static int Unix_cf_pclose_def(FILE *pfp, Attributes a, Promise *pp)
     if (fd >= MAX_FD)
     {
         CfOut(cf_error, "",
-              "File descriptor %d of child higher than MAX_FD in Unix_cf_pclose_def, check for defunct children", fd);
+              "File descriptor %d of child higher than MAX_FD in cf_pclose_def, check for defunct children", fd);
         fclose(pfp);
         return -1;
     }
@@ -918,7 +827,7 @@ static int Unix_cf_pclose_def(FILE *pfp, Attributes a, Promise *pp)
         return -1;
     }
 
-    CfDebug("Unix_cf_pclose_def - Waiting for process %jd\n", (intmax_t)pid);
+    CfDebug("cf_pclose_def - Waiting for process %" PRIdMAX "\n", (intmax_t)pid);
 
 # ifdef HAVE_WAITPID
 
@@ -967,6 +876,29 @@ static int Unix_cf_pclose_def(FILE *pfp, Attributes a, Promise *pp)
 
     return (WEXITSTATUS(status));
 # endif
+}
+
+/*******************************************************************/
+
+bool PipeToPid(pid_t *pid, FILE *pp)
+{
+    if (!ThreadLock(cft_count))
+    {
+        return false;
+    }
+
+    if (CHILDREN == NULL)       /* popen hasn't been called */
+    {
+        ThreadUnlock(cft_count);
+        return false;
+    }
+
+    int fd = fileno(pp);
+    *pid = CHILDREN[fd];
+
+    ThreadUnlock(cft_count);
+
+    return true;
 }
 
 /*******************************************************************/

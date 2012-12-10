@@ -23,10 +23,19 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "sysinfo.h"
+#include "files_names.h"
+#include "files_interfaces.h"
 #include "monitoring.h"
+#include "item_lib.h"
+#include "cfstream.h"
+#include "communication.h"
+#include "pipes.h"
 
 /* Constants */
+
+#define CF_TCPDUMP_COMM "/usr/sbin/tcpdump -t -n -v"
 
 static const int SLEEPTIME = 2.5 * 60;  /* Should be a fraction of 5 minutes */
 
@@ -191,7 +200,7 @@ static void AnalyzeArrival(long iteration, char *arrival, double *cf_this)
    IP (tos 0x0, ttl 64, id 0, offset 0, flags [DF], proto ICMP (1), length 84) 192.168.1.103 > 128.39.89.10: ICMP echo request, id 48474, seq 2, length 64
 */
 
-    for (arr = strstr(arrival, "length"); arr != NULL && *arr != ')'; arr++)
+    for (arr = strstr(arrival, "length"); (arr != NULL) && (*arr != ')'); arr++)
     {
     }
 
@@ -204,7 +213,7 @@ static void AnalyzeArrival(long iteration, char *arrival, double *cf_this)
         arr++;
     }
 
-    if (strstr(arrival, "proto TCP") || strstr(arrival, "ack"))
+    if ((strstr(arrival, "proto TCP")) || (strstr(arrival, "ack")))
     {
         sscanf(arr, "%s %*c %s %c ", src, dest, &flag);
         DePort(src);

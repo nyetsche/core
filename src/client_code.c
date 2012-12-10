@@ -24,23 +24,30 @@
 
 */
 
-/*******************************************************************/
-/*                                                                 */
-/* File copying                                                    */
-/*                                                                 */
-/* client part for remote copying                                  */
-/*                                                                 */
-/*******************************************************************/
+#include "client_code.h"
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
-
+#include "communication.h"
+#include "sysinfo.h"
 #include "dir.h"
 #include "dir_priv.h"
 #include "client_protocol.h"
+#include "crypto.h"
+#include "cfstream.h"
+#include "files_hashes.h"
+
+typedef struct
+{
+    char *server;
+    AgentConnection *conn;
+    int busy;
+} ServerItem;
+
+#define CFENGINE_SERVICE "cfengine"
 
 /* seconds */
 #define RECVTIMEOUT 30
+
+#define CF_COULD_NOT_CONNECT -2
 
 Rlist *SERVERLIST = NULL;
 
@@ -149,13 +156,15 @@ AgentConnection *ServerConnection(char *server, Attributes attr, Promise *pp)
     AgentConnection *conn;
 
 #ifndef MINGW
-    static sigset_t signal_mask;
-
     signal(SIGPIPE, SIG_IGN);
+#endif /* NOT MINGW */
+
+#if !defined(__MINGW32__)
+    static sigset_t signal_mask;
     sigemptyset(&signal_mask);
     sigaddset(&signal_mask, SIGPIPE);
     pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
-#endif /* NOT MINGW */
+#endif
 
     conn = NewAgentConn();
 
@@ -186,7 +195,7 @@ AgentConnection *ServerConnection(char *server, Attributes attr, Promise *pp)
 
             if (conn->sd != SOCKET_INVALID)
             {
-                ServerDisconnection(conn);
+                DisconnectServer(conn);
             }
 
             return NULL;
@@ -203,7 +212,7 @@ AgentConnection *ServerConnection(char *server, Attributes attr, Promise *pp)
         {
             CfOut(cf_error, "", " !! Id-authentication for %s failed\n", VFQNAME);
             errno = EPERM;
-            ServerDisconnection(conn);
+            DisconnectServer(conn);
             return NULL;
         }
 
@@ -211,7 +220,7 @@ AgentConnection *ServerConnection(char *server, Attributes attr, Promise *pp)
         {
             CfOut(cf_error, "", " !! Authentication dialogue with %s failed\n", server);
             errno = EPERM;
-            ServerDisconnection(conn);
+            DisconnectServer(conn);
             return NULL;
         }
 
@@ -228,7 +237,7 @@ AgentConnection *ServerConnection(char *server, Attributes attr, Promise *pp)
 
 /*********************************************************************/
 
-void ServerDisconnection(AgentConnection *conn)
+void DisconnectServer(AgentConnection *conn)
 {
     CfDebug("Closing current server connection\n");
 
@@ -253,7 +262,6 @@ int cf_remote_stat(char *file, struct stat *buf, char *stattype, Attributes attr
     char recvbuffer[CF_BUFSIZE];
     char in[CF_BUFSIZE], out[CF_BUFSIZE];
     AgentConnection *conn = pp->conn;
-    Stat cfst;
     int ret, tosend, cipherlen;
     time_t tloc;
 
@@ -309,7 +317,6 @@ int cf_remote_stat(char *file, struct stat *buf, char *stattype, Attributes attr
 
     if (ReceiveTransaction(conn->sd, recvbuffer, NULL) == -1)
     {
-        DestroyServerConnection(conn);
         return -1;
     }
 
@@ -328,10 +335,29 @@ int cf_remote_stat(char *file, struct stat *buf, char *stattype, Attributes attr
 
     if (OKProtoReply(recvbuffer))
     {
-        long d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12 = 0, d13 = 0;
+        Stat cfst;
 
-        sscanf(recvbuffer, "OK: %1ld %5ld %14ld %14ld %14ld %14ld %14ld %14ld %14ld %14ld %14ld %14ld %14ld",
+        // use intmax_t here to provide enough space for large values coming over the protocol
+        intmax_t d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12 = 0, d13 = 0;
+        ret = sscanf(recvbuffer, "OK: "
+               "%1" PRIdMAX     // 01 cfst.cf_type
+               " %5" PRIdMAX    // 02 cfst.cf_mode
+               " %14" PRIdMAX   // 03 cfst.cf_lmode
+               " %14" PRIdMAX   // 04 cfst.cf_uid
+               " %14" PRIdMAX   // 05 cfst.cf_gid
+               " %18" PRIdMAX   // 06 cfst.cf_size
+               " %14" PRIdMAX   // 07 cfst.cf_atime
+               " %14" PRIdMAX   // 08 cfst.cf_mtime
+               " %14" PRIdMAX   // 09 cfst.cf_ctime
+               " %1" PRIdMAX    // 10 cfst.cf_makeholes
+               " %14" PRIdMAX   // 11 cfst.cf_ino
+               " %14" PRIdMAX   // 12 cfst.cf_nlink
+               " %18" PRIdMAX,  // 13 cfst.cf_dev
                &d1, &d2, &d3, &d4, &d5, &d6, &d7, &d8, &d9, &d10, &d11, &d12, &d13);
+        if (ret < 13) {
+            CfOut(cf_error, "", "!! Cannot read SYNCH reply from %s: only %d/13 items parsed", conn->remoteip, ret );
+            return -1;
+        }
 
         cfst.cf_type = (enum cf_filetype) d1;
         cfst.cf_mode = (mode_t) d2;
@@ -346,14 +372,14 @@ int cf_remote_stat(char *file, struct stat *buf, char *stattype, Attributes attr
         pp->makeholes = (char) d10;
         cfst.cf_ino = d11;
         cfst.cf_nlink = d12;
-        cfst.cf_dev = d13;
+        cfst.cf_dev = (dev_t)d13;
 
         /* Use %?d here to avoid memory overflow attacks */
 
-        CfDebug("Mode = %ld,%ld\n", d2, d3);
+        CfDebug("Mode = %u, %u\n", cfst.cf_mode, cfst.cf_lmode);
 
         CfDebug
-            ("OK: type=%d\n mode=%jo\n lmode=%jo\n uid=%ju\n gid=%ju\n size=%ld\n atime=%jd\n mtime=%jd ino=%d nlnk=%d, dev=%jd\n",
+            ("OK: type=%d\n mode=%" PRIoMAX "\n lmode=%" PRIoMAX "\n uid=%" PRIuMAX "\n gid=%" PRIuMAX "\n size=%ld\n atime=%" PRIdMAX "\n mtime=%" PRIdMAX " ino=%d nlnk=%d, dev=%" PRIdMAX "\n",
              cfst.cf_type, (uintmax_t)cfst.cf_mode, (uintmax_t)cfst.cf_lmode, (uintmax_t)cfst.cf_uid, (uintmax_t)cfst.cf_gid, (long) cfst.cf_size,
              (intmax_t) cfst.cf_atime, (intmax_t) cfst.cf_mtime, cfst.cf_ino, cfst.cf_nlink, (intmax_t) cfst.cf_dev);
 
@@ -361,7 +387,6 @@ int cf_remote_stat(char *file, struct stat *buf, char *stattype, Attributes attr
 
         if (ReceiveTransaction(conn->sd, recvbuffer, NULL) == -1)
         {
-            DestroyServerConnection(conn);
             return -1;
         }
 
@@ -404,7 +429,7 @@ int cf_remote_stat(char *file, struct stat *buf, char *stattype, Attributes attr
         cfst.cf_filename = xstrdup(file);
         cfst.cf_server = xstrdup(pp->this_server);
 
-        if ((cfst.cf_filename == NULL) || (cfst.cf_server) == NULL)
+        if ((cfst.cf_filename == NULL) || (cfst.cf_server == NULL))
         {
             FatalError("Memory allocation in cf_rstat");
         }
@@ -500,7 +525,6 @@ Dir *OpenDirRemote(const char *dirname, Attributes attr, Promise *pp)
     {
         if ((n = ReceiveTransaction(conn->sd, recvbuffer, NULL)) == -1)
         {
-            DestroyServerConnection(conn);
             free((char *) cfdirh);
             return NULL;
         }
@@ -654,7 +678,6 @@ int CompareHashNet(char *file1, char *file2, Attributes attr, Promise *pp)
 
     if (ReceiveTransaction(conn->sd, recvbuffer, NULL) == -1)
     {
-        DestroyServerConnection(conn);
         cfPS(cf_error, CF_INTERPT, "recv", pp, attr, "Failed send");
         CfOut(cf_verbose, "", "No answer from host, assuming checksum ok to avoid remote copy for now...\n");
         return false;
@@ -682,7 +705,7 @@ int CopyRegularFileNet(char *source, char *new, off_t size, Attributes attr, Pro
     int last_write_made_hole = 0, done = false, tosend, value;
     char *buf, workbuf[CF_BUFSIZE], cfchangedstr[265];
 
-    long n_read_total = 0;
+    off_t n_read_total = 0;
     EVP_CIPHER_CTX ctx;
     AgentConnection *conn = pp->conn;
 
@@ -724,9 +747,12 @@ int CopyRegularFileNet(char *source, char *new, off_t size, Attributes attr, Pro
     buf = xmalloc(CF_BUFSIZE + sizeof(int));    /* Note CF_BUFSIZE not buf_size !! */
     n_read_total = 0;
 
+    CfOut(cf_verbose, "", "Copying remote file %s:%s, expecting %jd bytes",
+          pp->this_server, source, (intmax_t)size);
+
     while (!done)
     {
-        if ((size - n_read_total) / buf_size > 0)
+        if ((size - n_read_total) >= buf_size)
         {
             toget = towrite = buf_size;
         }
@@ -744,8 +770,10 @@ int CopyRegularFileNet(char *source, char *new, off_t size, Attributes attr, Pro
 
         if ((n_read = RecvSocketStream(conn->sd, buf, toget, 0)) == -1)
         {
-            DestroyServerConnection(conn);
-            cfPS(cf_error, CF_INTERPT, "recv", pp, attr, "Error in client-server stream");
+            /* This may happen on race conditions,
+             * where the file has shrunk since we asked for its size in SYNCH ... STAT source */
+
+            cfPS(cf_error, CF_INTERPT, "", pp, attr, "Error in client-server stream (has %s:%s shrunk?)", pp->this_server, source);
             close(dd);
             free(buf);
             return false;
@@ -753,7 +781,7 @@ int CopyRegularFileNet(char *source, char *new, off_t size, Attributes attr, Pro
 
         /* If the first thing we get is an error message, break. */
 
-        if (n_read_total == 0 && strncmp(buf, CF_FAILEDSTR, strlen(CF_FAILEDSTR)) == 0)
+        if ((n_read_total == 0) && (strncmp(buf, CF_FAILEDSTR, strlen(CF_FAILEDSTR)) == 0))
         {
             cfPS(cf_inform, CF_INTERPT, "", pp, attr, "Network access to %s:%s denied\n", pp->this_server, source);
             close(dd);
@@ -775,7 +803,7 @@ int CopyRegularFileNet(char *source, char *new, off_t size, Attributes attr, Pro
 
         sscanf(buf, "t %d", &value);
 
-        if ((value > 0) && strncmp(buf + CF_INBAND_OFFSET, "BAD: ", 5) == 0)
+        if ((value > 0) && (strncmp(buf + CF_INBAND_OFFSET, "BAD: ", 5) == 0))
         {
             cfPS(cf_inform, CF_INTERPT, "", pp, attr, "Network access to cleartext %s:%s denied\n", pp->this_server,
                  source);
@@ -798,7 +826,7 @@ int CopyRegularFileNet(char *source, char *new, off_t size, Attributes attr, Pro
 
         n_read_total += towrite;        /* n_read; */
 
-        if (n_read_total >= (long) size)        /* Handle EOF without closing socket */
+        if (n_read_total >= size)        /* Handle EOF without closing socket */
         {
             done = true;
         }
@@ -811,7 +839,7 @@ int CopyRegularFileNet(char *source, char *new, off_t size, Attributes attr, Pro
 
     if (last_write_made_hole)
     {
-        if (FullWrite(dd, "", 1) < 0 || ftruncate(dd, n_read_total) < 0)
+        if ((FullWrite(dd, "", 1) < 0) || (ftruncate(dd, n_read_total) < 0))
         {
             cfPS(cf_error, CF_FAIL, "", pp, attr, "FullWrite or ftruncate error in CopyReg, source %s\n", source);
             free(buf);
@@ -893,7 +921,6 @@ int EncryptCopyRegularFileNet(char *source, char *new, off_t size, Attributes at
     {
         if ((cipherlen = ReceiveTransaction(conn->sd, buf, &more)) == -1)
         {
-            DestroyServerConnection(conn);
             free(buf);
             return false;
         }
@@ -902,7 +929,7 @@ int EncryptCopyRegularFileNet(char *source, char *new, off_t size, Attributes at
 
         /* If the first thing we get is an error message, break. */
 
-        if (n_read_total == 0 && strncmp(buf + CF_INBAND_OFFSET, CF_FAILEDSTR, strlen(CF_FAILEDSTR)) == 0)
+        if ((n_read_total == 0) && (strncmp(buf + CF_INBAND_OFFSET, CF_FAILEDSTR, strlen(CF_FAILEDSTR)) == 0))
         {
             cfPS(cf_inform, CF_INTERPT, "", pp, attr, "Network access to %s:%s denied\n", pp->this_server, source);
             close(dd);
@@ -959,7 +986,7 @@ int EncryptCopyRegularFileNet(char *source, char *new, off_t size, Attributes at
 
     if (last_write_made_hole)
     {
-        if (FullWrite(dd, "", 1) < 0 || ftruncate(dd, n_read_total) < 0)
+        if ((FullWrite(dd, "", 1) < 0) || (ftruncate(dd, n_read_total) < 0))
         {
             cfPS(cf_error, CF_FAIL, "", pp, attr, "FullWrite or ftruncate error in CopyReg, source %s\n", source);
             free(buf);
@@ -1000,7 +1027,7 @@ int ServerConnect(AgentConnection *conn, char *host, Attributes attr, Promise *p
 
     CfOut(cf_verbose, "", "Set cfengine port number to %s = %u\n", strport, (int) ntohs(shortport));
 
-    if (attr.copy.timeout == (short) CF_NOINT || attr.copy.timeout <= 0)
+    if ((attr.copy.timeout == (short) CF_NOINT) || (attr.copy.timeout <= 0))
     {
         tv.tv_sec = CONNTIMEOUT;
     }
@@ -1100,9 +1127,13 @@ int ServerConnect(AgentConnection *conn, char *host, Attributes attr, Promise *p
             freeaddrinfo(response);
         }
 
-        if (!connected && pp)
+        if (!connected)
         {
-            cfPS(cf_verbose, CF_FAIL, "connect", pp, attr, " !! Unable to connect to server %s", host);
+            if (pp)
+            {
+                cfPS(cf_verbose, CF_FAIL, "connect", pp, attr, " !! Unable to connect to server %s", host);
+            }
+
             return false;
         }
 
@@ -1188,11 +1219,11 @@ void DestroyServerConnection(AgentConnection *conn)
 {
     Rlist *entry = KeyInRlist(SERVERLIST, conn->remoteip);
 
-    ServerDisconnection(conn);
+    DisconnectServer(conn);
 
     if (entry != NULL)
     {
-        entry->item = NULL;     /* Has been freed by ServerDisconnection */
+        entry->item = NULL;     /* Has been freed by DisconnectServer */
         DeleteRlistEntry(&SERVERLIST, entry);
     }
 }
@@ -1224,7 +1255,7 @@ static AgentConnection *GetIdleConnectionToServer(const char *server)
             return NULL;
         }
 
-        if ((strcmp(ipname, svp->server) == 0) && svp->conn && svp->conn->sd > 0)
+        if ((strcmp(ipname, svp->server) == 0) && (svp->conn) && (svp->conn->sd > 0))
         {
             CfOut(cf_verbose, "", "Connection to %s is already open and ready...\n", ipname);
             svp->busy = true;
@@ -1421,7 +1452,7 @@ void ConnectionsCleanup(void)
             continue;
         }
 
-        ServerDisconnection(svp->conn);
+        DisconnectServer(svp->conn);
 
         if (svp->server)
         {
@@ -1448,9 +1479,6 @@ static int TryConnect(AgentConnection *conn, struct timeval *tvp, struct sockadd
     int res;
     long arg;
     struct sockaddr_in emptyCin = { 0 };
-# ifdef LINUX
-    struct timeval tvRecv = { 0 };
-# endif
 
     if (!cinp)
     {
@@ -1487,7 +1515,7 @@ static int TryConnect(AgentConnection *conn, struct timeval *tvp, struct sockadd
                 return false;
             }
 
-            if (valopt || res <= 0)
+            if (valopt || (res <= 0))
             {
                 CfOut(cf_inform, "connect", " !! Error connecting to server (timeout)");
                 return false;
@@ -1507,25 +1535,10 @@ static int TryConnect(AgentConnection *conn, struct timeval *tvp, struct sockadd
         CfOut(cf_error, "", "!! Could not set socket to blocking mode");
     }
 
-    /*
-     * NB: recv() timeout is not portable.  struct timeval is very
-     *     unstable - interpreted differently on different
-     *     platforms. E.g. setting tv_sec to 50 (and tv_usec to 0)
-     *     results in a timeout of 0.5 seconds on Windows, but 50
-     *     seconds on Linux. Thus it must be tested thoroughly on
-     *     the affected platforms. */
-
-# ifdef LINUX
-
-    tvRecv.tv_sec = RECVTIMEOUT;
-    tvRecv.tv_usec = 0;
-
-    if (setsockopt(conn->sd, SOL_SOCKET, SO_RCVTIMEO, (char *) &tvRecv, sizeof(tvRecv)))
+    if (SetReceiveTimeout(conn->sd, tvp) == -1)
     {
-        CfOut(cf_error, "setsockopt", "!! Couldn't set socket timeout");
+        CfOut(cf_error, "setsockopt", "!! Could not set socket timeout");
     }
-
-# endif
 
     return true;
 }

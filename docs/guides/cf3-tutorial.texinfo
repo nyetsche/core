@@ -395,7 +395,7 @@ Perl Compatible Regular Expression library.@*URL: @url{http://www.pcre.org/}
 @item
 On Windows machines, you need to install the basic Cygwin DLL from  
 @url{http://www.cygwin.com}
-in order to run CFEngine.
+in order to build CFEngine Community.
 @end table
 
 Additional functionality (some of which is available only in
@@ -685,6 +685,14 @@ and keep two independent quality assurance processes apart.}
 @section Getting started with the Community Edition
 
 The quickest way to get started with CFEngine is to download and install binary packages, available from @url{http://cfengine.com/inside/myspace}. Installing and bootstrapping these is a trivial operation, putting you two steps away from testing your first CFEngine policies. 
+
+@cartouche
+Note: There is a bug in Community 3.3.0 where the default policy files are not copied to @code{/var/cfengine/masterfiles} upon bootstrap. Workaround consists in manually copying these files before bootstrapping:
+@verbatim
+cp /var/cfengine/share/CoreBase/*.cf /var/cfengine/masterfiles/
+@end verbatim
+This will be corrected in a bugfix release coming soon.
+@end cartouche
 
 This procedure applies to all hosts, but you should bootstrap the hub (policy server) first. Find the hostname or IP address of the hub, here we assume the address is '123.456.789.123' (do not bootstrap with a localhost address).
 @verbatim
@@ -1326,7 +1334,7 @@ configured
 using control parameters described in the next chapter. Try:
 
 @verbatim
-host$ /var/cfengine/bin/cf-reports
+host$ /var/cfengine/bin/cf-report
 host$ ls ~/.cfagent/reports
 host$ mywebbrowser ~/.cfagent/reports/performance.html
 @end verbatim
@@ -3386,7 +3394,7 @@ reference them using the command:
 @verbatim
 # cf-promises -r
 @end verbatim
-Normally, the default policy in Nova or Constellation will perform this
+Normally, the default policy in Nova/Enterprise will perform this
 command each time the policy is changed.
 
 @node cf-know,  , Analyzing and indexing the policy, Example of topics promises

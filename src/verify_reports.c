@@ -23,18 +23,20 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: verify_reports.c                                                    */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 
 #include "dbm_api.h"
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "item_lib.h"
+#include "vars.h"
+#include "sort.h"
+#include "vars.h"
+#include "attributes.h"
+#include "cfstream.h"
+#include "communication.h"
 
-static void ShowState(char *type, Attributes a, Promise *pp);
+static void ShowState(char *type);
 static void PrintFile(Attributes a, Promise *pp);
 
 /*******************************************************************/
@@ -50,15 +52,29 @@ void VerifyReportPromise(Promise *pp)
 
     a = GetReportsAttributes(pp);
 
-    if (strcmp(pp->classes, "any") == 0)
-    {
-        CfOut(cf_verbose, "", " --> Reports promises may not be in class \"any\"");
-        return;
-    }
-
     snprintf(unique_name, CF_EXPANDSIZE - 1, "%s_%zu", pp->promiser, pp->offset.line);
     thislock = AcquireLock(unique_name, VUQNAME, CFSTARTTIME, a, pp, false);
 
+    // Handle return values before locks, as we always do this
+
+    if (a.report.result)
+    {
+        // User-unwritable value last-result contains the useresult
+        if (strlen(a.report.result) > 0)
+        {
+            snprintf(unique_name, CF_BUFSIZE, "last-result[%s]", a.report.result);
+        }
+        else
+        {
+            snprintf(unique_name, CF_BUFSIZE, "last-result");
+        }
+
+        NewScalar(pp->bundle, unique_name, pp->promiser, cf_str);
+        return;
+    }
+       
+    // Now do regular human reports
+    
     if (thislock.lock == NULL)
     {
         return;
@@ -86,7 +102,7 @@ void VerifyReportPromise(Promise *pp)
     {
         for (rp = a.report.showstate; rp != NULL; rp = rp->next)
         {
-            ShowState(rp->item, a, pp);
+            ShowState(rp->item);
         }
     }
 
@@ -120,7 +136,7 @@ static void PrintFile(Attributes a, Promise *pp)
         return;
     }
 
-    while (!feof(fp) && (lines < a.report.numlines))
+    while ((!feof(fp)) && (lines < a.report.numlines))
     {
         buffer[0] = '\0';
         fgets(buffer, CF_BUFSIZE, fp);
@@ -133,7 +149,7 @@ static void PrintFile(Attributes a, Promise *pp)
 
 /*********************************************************************/
 
-static void ShowState(char *type, Attributes a, Promise *pp)
+static void ShowState(char *type)
 {
     struct stat statbuf;
     char buffer[CF_BUFSIZE], vbuff[CF_BUFSIZE], assemble[CF_BUFSIZE];
@@ -171,7 +187,7 @@ static void ShowState(char *type, Attributes a, Promise *pp)
 
                 if (IsSocketType(type))
                 {
-                    if (strncmp(type, "incoming", 8) == 0 || strncmp(type, "outgoing", 8) == 0)
+                    if ((strncmp(type, "incoming", 8) == 0) || (strncmp(type, "outgoing", 8) == 0))
                     {
                         if (strncmp(buffer, "tcp", 3) == 0)
                         {
@@ -237,13 +253,8 @@ static void ShowState(char *type, Attributes a, Promise *pp)
         CfOut(cf_error, "", "\n");
         CfOut(cf_error, "", "R: The peak measured state was q = %d:\n", conns);
 
-        if (IsSocketType(type) || IsTCPType(type))
+        if ((IsSocketType(type)) || (IsTCPType(type)))
         {
-            if (addresses != NULL)
-            {
-                cfPS(cf_error, CF_CHG, "", pp, a, " {\n");
-            }
-
             for (ip = addresses; ip != NULL; ip = ip->next)
             {
                 tot += ip->counter;
@@ -251,7 +262,7 @@ static void ShowState(char *type, Attributes a, Promise *pp)
                 buffer[0] = '\0';
                 sscanf(ip->name, "%s", buffer);
 
-                if (!IsIPV4Address(buffer) && !IsIPV6Address(buffer))
+                if ((!IsIPV4Address(buffer)) && (!IsIPV6Address(buffer)))
                 {
                     CfOut(cf_verbose, "", "Rejecting address %s\n", ip->name);
                     continue;

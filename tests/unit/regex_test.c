@@ -4,7 +4,7 @@
 #include <cmockery.h>
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "matching.h"
 
 static void test_full_text_match(void **state)
 {

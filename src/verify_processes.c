@@ -22,8 +22,16 @@
   included file COSL.txt.
 */
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "verify_processes.h"
+
+#include "env_context.h"
+#include "promises.h"
+#include "vars.h"
+#include "item_lib.h"
+#include "conversion.h"
+#include "matching.h"
+#include "attributes.h"
+#include "cfstream.h"
 
 static int ProcessSanityChecks(Attributes a, Promise *pp);
 static void VerifyProcessOp(Item *procdata, Attributes a, Promise *pp);
@@ -50,11 +58,11 @@ static int ProcessSanityChecks(Attributes a, Promise *pp)
 {
     int promised_zero, ret = true;
 
-    promised_zero = (a.process_count.min_range == 0 && a.process_count.max_range == 0);
+    promised_zero = ((a.process_count.min_range == 0) && (a.process_count.max_range == 0));
 
     if (a.restart_class)
     {
-        if (IsStringIn(a.signals, "term") || IsStringIn(a.signals, "kill"))
+        if ((IsStringIn(a.signals, "term")) || (IsStringIn(a.signals, "kill")))
         {
             CfOut(cf_inform, "", " -> (warning) Promise %s kills then restarts - never strictly converges",
                   pp->promiser);
@@ -70,7 +78,7 @@ static int ProcessSanityChecks(Attributes a, Promise *pp)
         }
     }
 
-    if (promised_zero && a.restart_class)
+    if (promised_zero && (a.restart_class))
     {
         CfOut(cf_error, "", "Promise constraint conflicts - %s processes cannot have zero count if restarted",
               pp->promiser);
@@ -78,7 +86,7 @@ static int ProcessSanityChecks(Attributes a, Promise *pp)
         ret = false;
     }
 
-    if (a.haveselect && !a.process_select.process_result)
+    if ((a.haveselect) && (!a.process_select.process_result))
     {
         CfOut(cf_error, "", " !! Process select constraint body promised no result (check body definition)");
         PromiseRef(cf_error, pp);
@@ -120,25 +128,6 @@ void VerifyProcesses(Attributes a, Promise *pp)
     YieldCurrentLock(thislock);
 }
 
-/*******************************************************************/
-
-int LoadProcessTable(Item **procdata)
-{
-    if (PROCESSTABLE)
-    {
-        CfOut(cf_verbose, "", " -> Reusing cached process state");
-        return true;
-    }
-
-#ifdef MINGW
-    return NovaWin_LoadProcessTable(procdata);
-#else
-    return Unix_LoadProcessTable(procdata);
-#endif
-}
-
-/*******************************************************************/
-
 static void VerifyProcessOp(Item *procdata, Attributes a, Promise *pp)
 {
     int matches = 0, do_signals = true, out_of_range, killed = 0, need_to_restart = true;
@@ -152,16 +141,15 @@ static void VerifyProcessOp(Item *procdata, Attributes a, Promise *pp)
 
     if (a.process_count.min_range != CF_NOINT)  /* if a range is specified */
     {
-        if (matches < a.process_count.min_range || matches > a.process_count.max_range)
+        if ((matches < a.process_count.min_range) || (matches > a.process_count.max_range))
         {
-            cfPS(cf_error, CF_CHG, "", pp, a, " !! Process count for \'%s\' was out of promised range (%d found)\n",
-                 pp->promiser, matches);
-            AddEphemeralClasses(a.process_count.out_of_range_define);
+            cfPS(cf_error, CF_CHG, "", pp, a, " !! Process count for \'%s\' was out of promised range (%d found)\n", pp->promiser, matches);
+            AddEphemeralClasses(a.process_count.out_of_range_define, pp->namespace);
             out_of_range = true;
         }
         else
         {
-            AddEphemeralClasses(a.process_count.in_range_define);
+            AddEphemeralClasses(a.process_count.in_range_define, pp->namespace);
             cfPS(cf_verbose, CF_NOP, "", pp, a, " -> Process promise for %s is kept", pp->promiser);
             out_of_range = false;
         }
@@ -187,7 +175,7 @@ static void VerifyProcessOp(Item *procdata, Attributes a, Promise *pp)
 
 /* signal/kill promises for existing matches */
 
-    if (do_signals && matches > 0)
+    if (do_signals && (matches > 0))
     {
         if (a.process_stop != NULL)
         {
@@ -218,7 +206,7 @@ static void VerifyProcessOp(Item *procdata, Attributes a, Promise *pp)
 
 /* delegated promise to restart killed or non-existent entries */
 
-    need_to_restart = (a.restart_class != NULL) && (killed || matches == 0);
+    need_to_restart = (a.restart_class != NULL) && (killed || (matches == 0));
 
     DeleteItemList(killlist);
 
@@ -237,7 +225,7 @@ static void VerifyProcessOp(Item *procdata, Attributes a, Promise *pp)
         else
         {
             cfPS(cf_inform, CF_CHG, "", pp, a, " -> Making a one-time restart promise for %s", pp->promiser);
-            NewClass(a.restart_class);
+            NewClass(a.restart_class, pp->namespace);
         }
     }
 }
@@ -290,7 +278,7 @@ static int FindPidMatches(Item *procdata, Item **killlist, Attributes a, Promise
 
             if (pid == 1)
             {
-                if ((RlistLen(a.signals) == 1) && IsStringIn(a.signals, "hup"))
+                if ((RlistLen(a.signals) == 1) && (IsStringIn(a.signals, "hup")))
                 {
                     CfOut(cf_verbose, "", "(Okay to send only HUP to init)\n");
                 }
@@ -300,23 +288,23 @@ static int FindPidMatches(Item *procdata, Item **killlist, Attributes a, Promise
                 }
             }
 
-            if (pid < 4 && a.signals)
+            if ((pid < 4) && (a.signals))
             {
                 CfOut(cf_verbose, "", "Will not signal or restart processes 0,1,2,3 (occurred while looking for %s)\n",
                       pp->promiser);
                 continue;
             }
 
-            promised_zero = a.process_count.min_range == 0 && a.process_count.max_range == 0;
+            promised_zero = (a.process_count.min_range == 0) && (a.process_count.max_range == 0);
 
-            if (a.transaction.action == cfa_warn && promised_zero)
+            if ((a.transaction.action == cfa_warn) && promised_zero)
             {
                 CfOut(cf_error, "", "Process alert: %s\n", procdata->name);     /* legend */
                 CfOut(cf_error, "", "Process alert: %s\n", ip->name);
                 continue;
             }
 
-            if (pid == cfengine_pid && a.signals)
+            if ((pid == cfengine_pid) && (a.signals))
             {
                 CfOut(cf_verbose, "", " !! cf-agent will not signal itself!\n");
                 continue;
@@ -339,21 +327,6 @@ static int FindPidMatches(Item *procdata, Item **killlist, Attributes a, Promise
 
     return matches;
 }
-
-/**********************************************************************************/
-
-int DoAllSignals(Item *siglist, Attributes a, Promise *pp)
-{
-#ifdef MINGW
-    return NovaWin_DoAllSignals(siglist, a, pp);
-#else
-    return Unix_DoAllSignals(siglist, a, pp);
-#endif
-}
-
-/**********************************************************************************/
-/* Level                                                                          */
-/**********************************************************************************/
 
 static int ExtractPid(char *psentry, char **names, int *start, int *end)
 {
@@ -449,15 +422,4 @@ void GetProcessColumnNames(char *proc, char **names, int *start, int *end)
         CfDebug("End of %s is %d\n", title, offset);
         end[col] = offset;
     }
-}
-
-/**********************************************************************************/
-
-int GracefulTerminate(pid_t pid)
-{
-#ifdef MINGW
-    return NovaWin_GracefulTerminate(pid);
-#else
-    return Unix_GracefulTerminate(pid);
-#endif
 }

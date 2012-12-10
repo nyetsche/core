@@ -23,8 +23,9 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
 #include "monitoring.h"
+#include "cfstream.h"
 
 #ifdef HAVE_SYS_LOADAVG_H
 # include <sys/loadavg.h>

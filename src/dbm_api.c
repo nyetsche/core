@@ -23,24 +23,16 @@
   included file COSL.txt.
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: dbm_api.c                                                           */
-/*                                                                           */
-/*****************************************************************************/
-
-#include <assert.h>
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 
 #include "dbm_api.h"
 #include "dbm_priv.h"
 #include "dbm_lib.h"
+#include "dbm_migration.h"
+#include "atexit.h"
+#include "cfstream.h"
 
-/* FIXME: turn into a generic "on-open" hook for databases. */
-bool LastseenMigration(DBHandle *db);
-/* ENDFIXME */
+#include <assert.h>
 
 /******************************************************************************/
 
@@ -71,7 +63,9 @@ struct DBCursor_
  */
 static pthread_mutex_t db_handles_lock = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
 
-static DBHandle db_handles[dbid_count] = { { 0 } };
+static DBHandle db_handles[dbid_max] = { { 0 } };
+
+static pthread_once_t db_shutdown_once = PTHREAD_ONCE_INIT;
 
 /******************************************************************************/
 
@@ -120,7 +114,7 @@ static char *DBIdToPath(dbid id)
 
 static DBHandle *DBHandleGet(int id)
 {
-    assert(id >= 0 && id < dbid_count);
+    assert(id >= 0 && id < dbid_max);
 
     pthread_mutex_lock(&db_handles_lock);
 
@@ -135,71 +129,12 @@ static DBHandle *DBHandleGet(int id)
     return &db_handles[id];
 }
 
-bool OpenDB(DBHandle **dbp, dbid id)
-{
-    DBHandle *handle = DBHandleGet(id);
-
-    pthread_mutex_lock(&handle->lock);
-
-    if (handle->refcount == 0)
-    {
-        int lock_fd = DBPathLock(handle->filename);
-
-        if(lock_fd != -1)
-        {
-            handle->priv = DBPrivOpenDB(handle->filename);
-            DBPathUnLock(lock_fd);
-        }
-
-        /* FIXME: turn into a generic "on-open" hook for databases. */
-        if (handle->priv && id == dbid_lastseen)
-        {
-            if (!LastseenMigration(handle))
-            {
-                DBPrivCloseDB(handle->priv);
-                handle->priv = NULL;
-            }
-        }
-        /* ENDFIXME */
-    }
-
-    if (handle->priv)
-    {
-        handle->refcount++;
-        *dbp = handle;
-    }
-    else
-    {
-        *dbp = NULL;
-    }
-
-    pthread_mutex_unlock(&handle->lock);
-
-    return *dbp != NULL;
-}
-
-void CloseDB(DBHandle *handle)
-{
-    pthread_mutex_lock(&handle->lock);
-
-    if (handle->refcount < 1)
-    {
-        CfOut(cf_error, "", "Trying to close database %s which is not open", handle->filename);
-    }
-    else if (--handle->refcount == 0)
-    {
-        DBPrivCloseDB(handle->priv);
-    }
-
-    pthread_mutex_unlock(&handle->lock);
-}
-
 /* Closes all open DB handles */
-void CloseAllDB(void)
+static void CloseAllDB(void)
 {
     pthread_mutex_lock(&db_handles_lock);
 
-    for (int i = 0; i < dbid_count; ++i)
+    for (int i = 0; i < dbid_max; ++i)
     {
         if (db_handles[i].refcount != 0)
         {
@@ -230,6 +165,75 @@ void CloseAllDB(void)
     pthread_mutex_unlock(&db_handles_lock);
 }
 
+static void RegisterShutdownHandler(void)
+{
+    RegisterAtExitFunction(&CloseAllDB);
+}
+
+bool OpenDB(DBHandle **dbp, dbid id)
+{
+    DBHandle *handle = DBHandleGet(id);
+
+    pthread_mutex_lock(&handle->lock);
+
+    if (handle->refcount == 0)
+    {
+        int lock_fd = DBPathLock(handle->filename);
+
+        if(lock_fd != -1)
+        {
+            handle->priv = DBPrivOpenDB(handle->filename);
+            DBPathUnLock(lock_fd);
+        }
+
+        if (handle->priv)
+        {
+            if (!DBMigrate(handle, id))
+            {
+                DBPrivCloseDB(handle->priv);
+                handle->priv = NULL;
+            }
+        }
+    }
+
+    if (handle->priv)
+    {
+        handle->refcount++;
+        *dbp = handle;
+
+        /* Only register shutdown handler if any database was opened
+         * correctly. Otherwise this shutdown caller may be called too early,
+         * and shutdown handler installed by the database library may end up
+         * being called before CloseAllDB function */
+
+        pthread_once(&db_shutdown_once, RegisterShutdownHandler);
+    }
+    else
+    {
+        *dbp = NULL;
+    }
+
+    pthread_mutex_unlock(&handle->lock);
+
+    return *dbp != NULL;
+}
+
+void CloseDB(DBHandle *handle)
+{
+    pthread_mutex_lock(&handle->lock);
+
+    if (handle->refcount < 1)
+    {
+        CfOut(cf_error, "", "Trying to close database %s which is not open", handle->filename);
+    }
+    else if (--handle->refcount == 0)
+    {
+        DBPrivCloseDB(handle->priv);
+    }
+
+    pthread_mutex_unlock(&handle->lock);
+}
+
 /*****************************************************************************/
 
 bool ReadComplexKeyDB(DBHandle *handle, const char *key, int key_size,
@@ -249,12 +253,12 @@ bool DeleteComplexKeyDB(DBHandle *handle, const char *key, int key_size)
     return DBPrivDelete(handle->priv, key, key_size);
 }
 
-bool ReadDB(DBHandle *handle, char *key, void *dest, int destSz)
+bool ReadDB(DBHandle *handle, const char *key, void *dest, int destSz)
 {
     return DBPrivRead(handle->priv, key, strlen(key) + 1, dest, destSz);
 }
 
-bool WriteDB(DBHandle *handle, char *key, const void *src, int srcSz)
+bool WriteDB(DBHandle *handle, const char *key, const void *src, int srcSz)
 {
     return DBPrivWrite(handle->priv, key, strlen(key) + 1, src, srcSz);
 }
@@ -269,7 +273,7 @@ int ValueSizeDB(DBHandle *handle, const char *key, int key_size)
     return DBPrivGetValueSize(handle->priv, key, key_size);
 }
 
-bool DeleteDB(DBHandle *handle, char *key)
+bool DeleteDB(DBHandle *handle, const char *key)
 {
     return DBPrivDelete(handle->priv, key, strlen(key) + 1);
 }

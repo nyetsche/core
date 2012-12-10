@@ -25,11 +25,24 @@
 #include "generic_agent.h"
 #include "cf-execd-runner.h"
 
-/*******************************************************************/
+#include "bootstrap.h"
+#include "sysinfo.h"
+#include "env_context.h"
+#include "constraints.h"
+#include "promises.h"
+#include "vars.h"
+#include "item_lib.h"
+#include "conversion.h"
+#include "reporting.h"
+#include "scope.h"
+#include "hashes.h"
+#include "unix.h"
+#include "cfstream.h"
+#include "string_lib.h"
+#include "verify_processes.h"
 
-extern BodySyntax CFEX_CONTROLBODY[];
-
-/*******************************************************************/
+#define CF_EXEC_IFELAPSED 0
+#define CF_EXEC_EXPIREAFTER 1
 
 static int NO_FORK;
 static int ONCE;
@@ -37,13 +50,6 @@ static int WINSERVICE = true;
 
 static Item *SCHEDULE;
 static int SPLAYTIME = 0;
-
-static char EXECCOMMAND[CF_BUFSIZE];
-
-static char VMAILSERVER[CF_BUFSIZE];
-static char MAILFROM[CF_BUFSIZE];
-static char MAILTO[CF_BUFSIZE];
-static int MAXLINES = 30;
 
 #if defined(HAVE_PTHREAD)
 static pthread_attr_t threads_attrs;
@@ -53,15 +59,15 @@ static pthread_attr_t threads_attrs;
 
 static GenericAgentConfig CheckOpts(int argc, char **argv);
 static void ThisAgentInit(void);
-static bool ScheduleRun(void);
+static bool ScheduleRun(Policy **policy, ExecConfig *exec_config, const ReportContext *report_context);
 static void Apoptosis(void);
 
 #if defined(HAVE_PTHREAD)
 static bool LocalExecInThread(const ExecConfig *config);
 #endif
 
-void StartServer(void);
-static void KeepPromises(void);
+void StartServer(Policy *policy, ExecConfig *config, const ReportContext *report_context);
+void KeepPromises(Policy *policy, ExecConfig *config);
 
 static ExecConfig *CopyExecConfig(const ExecConfig *config);
 static void DestroyExecConfig(ExecConfig *config);
@@ -75,7 +81,7 @@ static const char *ID = "The executor daemon is a scheduler and wrapper for\n"
     "agent and can email it to a specified address. It can\n"
     "splay the start time of executions across the network\n" "and work as a class-based clock for scheduling.";
 
-static const struct option OPTIONS[15] =
+static const struct option OPTIONS[] =
 {
     {"help", no_argument, 0, 'h'},
     {"debug", no_argument, 0, 'd'},
@@ -89,12 +95,13 @@ static const struct option OPTIONS[15] =
     {"inform", no_argument, 0, 'I'},
     {"diagnostic", no_argument, 0, 'x'},
     {"no-fork", no_argument, 0, 'F'},
+    {"once", no_argument, 0, 'O'},
     {"no-winsrv", no_argument, 0, 'W'},
     {"ld-library-path", required_argument, 0, 'L'},
     {NULL, 0, 0, '\0'}
 };
 
-static const char *HINTS[15] =
+static const char *HINTS[sizeof(OPTIONS)/sizeof(OPTIONS[0])] =
 {
     "Print the help message",
     "Enable debugging output",
@@ -108,6 +115,7 @@ static const char *HINTS[15] =
     "Print basic information about changes made to the system, i.e. promises repaired",
     "Activate internal diagnostics (developers only)",
     "Run as a foreground processes (do not fork)",
+    "Run once and then exit",
     "Do not run as a service on windows - use this when running from a command shell (Cfengine Nova only)",
     "Set the internal value of LD_LIBRARY_PATH for child processes",
     NULL
@@ -119,9 +127,23 @@ int main(int argc, char *argv[])
 {
     GenericAgentConfig config = CheckOpts(argc, argv);
 
-    GenericInitialize("executor", config);
+    ReportContext *report_context = OpenReports("executor");
+    Policy *policy = GenericInitialize("executor", config, report_context);
     ThisAgentInit();
-    KeepPromises();
+
+    ExecConfig exec_config = {
+        .scheduled_run = !ONCE,
+        .exec_command = SafeStringDuplicate(""),
+        .mail_server = SafeStringDuplicate(""),
+        .mail_from_address = SafeStringDuplicate(""),
+        .mail_to_address = SafeStringDuplicate(""),
+        .mail_max_lines = 30,
+        .fq_name = VFQNAME,
+        .ip_address = VIPADDRESS,
+        .agent_expireafter = 10080,
+    };
+
+    KeepPromises(policy, &exec_config);
 
 #ifdef MINGW
     if (WINSERVICE)
@@ -131,8 +153,10 @@ int main(int argc, char *argv[])
     else
 #endif /* MINGW */
     {
-        StartServer();
+        StartServer(policy, &exec_config, report_context);
     }
+
+    ReportContextDestroy(report_context);
 
     return 0;
 }
@@ -147,9 +171,9 @@ static GenericAgentConfig CheckOpts(int argc, char **argv)
     int optindex = 0;
     int c;
     char ld_library_path[CF_BUFSIZE];
-    GenericAgentConfig config = GenericAgentDefaultConfig(cf_executor);
+    GenericAgentConfig config = GenericAgentDefaultConfig(AGENT_TYPE_EXECUTOR);
 
-    while ((c = getopt_long(argc, argv, "dvnKIf:D:N:VxL:hFV1gMW", OPTIONS, &optindex)) != EOF)
+    while ((c = getopt_long(argc, argv, "dvnKIf:D:N:VxL:hFOV1gMW", OPTIONS, &optindex)) != EOF)
     {
         switch ((char) c)
         {
@@ -165,7 +189,7 @@ static GenericAgentConfig CheckOpts(int argc, char **argv)
             break;
 
         case 'd':
-            NewClass("opt_debug");
+            HardClass("opt_debug");
             DEBUG = true;
             break;
 
@@ -193,7 +217,7 @@ static GenericAgentConfig CheckOpts(int argc, char **argv)
         case 'n':
             DONTDO = true;
             IGNORELOCK = true;
-            NewClass("opt_dry_run");
+            HardClass("opt_dry_run");
             break;
 
         case 'L':
@@ -208,8 +232,11 @@ static GenericAgentConfig CheckOpts(int argc, char **argv)
             break;
 
         case 'F':
-            ONCE = true;
             NO_FORK = true;
+            break;
+
+        case 'O':
+            ONCE = true;
             break;
 
         case 'V':
@@ -248,10 +275,6 @@ static GenericAgentConfig CheckOpts(int argc, char **argv)
 static void ThisAgentInit(void)
 {
     umask(077);
-    MAILTO[0] = '\0';
-    MAILFROM[0] = '\0';
-    VMAILSERVER[0] = '\0';
-    EXECCOMMAND[0] = '\0';
 
     if (SCHEDULE == NULL)
     {
@@ -276,18 +299,19 @@ static double GetSplay(void)
 {
     char splay[CF_BUFSIZE];
 
-    snprintf(splay, CF_BUFSIZE, "%s+%s+%d", VFQNAME, VIPADDRESS, getuid());
+    snprintf(splay, CF_BUFSIZE, "%s+%s+%ju", VFQNAME, VIPADDRESS, (uintmax_t)getuid());
 
     return ((double) GetHash(splay)) / CF_HASHTABLESIZE;
 }
 
 /*****************************************************************************/
+/* Might be called back from NovaWin_StartExecService */
 
-static void KeepPromises(void)
+void KeepPromises(Policy *policy, ExecConfig *config)
 {
-    for (Constraint *cp = ControlBodyConstraints(cf_executor); cp != NULL; cp = cp->next)
+    for (Constraint *cp = ControlBodyConstraints(policy, AGENT_TYPE_EXECUTOR); cp != NULL; cp = cp->next)
     {
-        if (IsExcluded(cp->classes))
+    if (IsExcluded(cp->classes, NULL))
         {
             continue;
         }
@@ -301,26 +325,36 @@ static void KeepPromises(void)
 
         if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_mailfrom].lval) == 0)
         {
-            strcpy(MAILFROM, retval.item);
-            CfDebug("mailfrom = %s\n", MAILFROM);
+            free(config->mail_from_address);
+            config->mail_from_address = SafeStringDuplicate(retval.item);
+            CfDebug("mailfrom = %s\n", config->mail_from_address);
         }
 
         if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_mailto].lval) == 0)
         {
-            strcpy(MAILTO, retval.item);
-            CfDebug("mailto = %s\n", MAILTO);
+            free(config->mail_to_address);
+            config->mail_to_address = SafeStringDuplicate(retval.item);
+            CfDebug("mailto = %s\n", config->mail_to_address);
         }
 
         if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_smtpserver].lval) == 0)
         {
-            strcpy(VMAILSERVER, retval.item);
-            CfDebug("smtpserver = %s\n", VMAILSERVER);
+            free(config->mail_server);
+            config->mail_server = SafeStringDuplicate(retval.item);
+            CfDebug("smtpserver = %s\n", config->mail_server);
         }
 
         if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_execcommand].lval) == 0)
         {
-            strcpy(EXECCOMMAND, retval.item);
-            CfDebug("exec_command = %s\n", EXECCOMMAND);
+            free(config->exec_command);
+            config->exec_command = SafeStringDuplicate(retval.item);
+            CfDebug("exec_command = %s\n", config->exec_command);
+        }
+
+        if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_agent_expireafter].lval) == 0)
+        {
+            config->agent_expireafter = Str2Int(retval.item);
+            CfDebug("agent_expireafter = %d\n", config->agent_expireafter);
         }
 
         if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_executorfacility].lval) == 0)
@@ -331,15 +365,15 @@ static void KeepPromises(void)
 
         if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_mailmaxlines].lval) == 0)
         {
-            MAXLINES = Str2Int(retval.item);
-            CfDebug("maxlines = %d\n", MAXLINES);
+            config->mail_max_lines = Str2Int(retval.item);
+            CfDebug("maxlines = %d\n", config->mail_max_lines);
         }
 
         if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_splaytime].lval) == 0)
         {
             int time = Str2Int(ScalarRvalValue(retval));
 
-            SPLAYTIME = (int) (time * GetSplay());
+            SPLAYTIME = (int) (time * SECONDS_PER_MINUTE * GetSplay());
         }
 
         if (strcmp(cp->lval, CFEX_CONTROLBODY[cfex_schedule].lval) == 0)
@@ -364,9 +398,11 @@ static void KeepPromises(void)
 /*****************************************************************************/
 
 /* Might be called back from NovaWin_StartExecService */
-void StartServer(void)
+void StartServer(Policy *policy, ExecConfig *config, const ReportContext *report_context)
 {
+#if !defined(__MINGW32__)
     time_t now = time(NULL);
+#endif
     Promise *pp = NewPromise("exec_cfengine", "the executor agent");
     Attributes dummyattr;
     CfLock thislock;
@@ -374,10 +410,7 @@ void StartServer(void)
 #if defined(HAVE_PTHREAD)
     pthread_attr_init(&threads_attrs);
     pthread_attr_setdetachstate(&threads_attrs, PTHREAD_CREATE_DETACHED);
-
-# ifdef HAVE_PTHREAD_ATTR_SETSTACKSIZE
     pthread_attr_setstacksize(&threads_attrs, (size_t)2048*1024);
-# endif
 #endif
 
     Banner("Starting executor");
@@ -399,6 +432,20 @@ void StartServer(void)
 
         /* Kill previous instances of cf-execd if those are still running */
         Apoptosis();
+
+        /* FIXME: kludge. This code re-sets "last" lock to the one we have
+           acquired a few lines before. If the cf-execd is terminated, this lock
+           will be removed, and subsequent restart of cf-execd won't fail.
+
+           The culprit is Apoptosis(), which creates a promise and executes it,
+           taking locks during it, so CFLOCK/CFLAST/CFLOG get reset.
+
+           Proper fix is to keep all the taken locks in the memory, and release
+           all of them during process termination.
+         */
+        strcpy(CFLOCK, thislock.lock);
+        strcpy(CFLAST, thislock.last ? thislock.last : "");
+        strcpy(CFLOG, thislock.log ? thislock.log : "");
     }
 
 #ifdef MINGW
@@ -413,7 +460,7 @@ void StartServer(void)
     if ((!NO_FORK) && (fork() != 0))
     {
         CfOut(cf_inform, "", "cf-execd starting %.24s\n", cf_ctime(&now));
-        exit(0);
+        _exit(0);
     }
 
     if (!NO_FORK)
@@ -433,39 +480,28 @@ void StartServer(void)
 
     umask(077);
 
-    ExecConfig config = {
-        .scheduled_run = !ONCE,
-        .exec_command = EXECCOMMAND,
-        .mail_server = VMAILSERVER,
-        .mail_from_address = MAILFROM,
-        .mail_to_address = MAILTO,
-        .mail_max_lines = MAXLINES,
-        .fq_name = VFQNAME,
-        .ip_address = VIPADDRESS,
-    };
-
     if (ONCE)
     {
         CfOut(cf_verbose, "", "Sleeping for splaytime %d seconds\n\n", SPLAYTIME);
         sleep(SPLAYTIME);
-        LocalExec(&config);
+        LocalExec(config);
         CloseLog();
     }
     else
     {
         while (true)
         {
-            if (ScheduleRun())
+            if (ScheduleRun(&policy, config, report_context))
             {
                 CfOut(cf_verbose, "", "Sleeping for splaytime %d seconds\n\n", SPLAYTIME);
                 sleep(SPLAYTIME);
 
 #if defined(HAVE_PTHREAD)
-                if (!LocalExecInThread(&config))
+                if (!LocalExecInThread(config))
                 {
                     CfOut(cf_inform, "", "Unable to run agent in thread, falling back to blocking execution");
 #endif
-                    LocalExec(&config);
+                    LocalExec(config);
 #if defined(HAVE_PTHREAD)
                 }
 #endif
@@ -484,7 +520,7 @@ void StartServer(void)
 #if defined(HAVE_PTHREAD)
 static void *LocalExecThread(void *param)
 {
-#ifdef HAVE_PTHREAD_SIGMASK
+#if !defined(__MINGW32__)
     sigset_t sigmask;
     sigemptyset(&sigmask);
     pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
@@ -563,13 +599,13 @@ static void Apoptosis()
     PrependRlist(&signals, "term", CF_SCALAR);
     PrependRlist(&owners, mypid, CF_SCALAR);
 
-    AppendConstraint(&(pp.conlist), "signals", (Rval) {signals, CF_LIST}, "any", false);
-    AppendConstraint(&(pp.conlist), "process_select", (Rval) {xstrdup("true"), CF_SCALAR}, "any", false);
-    AppendConstraint(&(pp.conlist), "process_owner", (Rval) {owners, CF_LIST}, "any", false);
-    AppendConstraint(&(pp.conlist), "ifelapsed", (Rval) {xstrdup("0"), CF_SCALAR}, "any", false);
-    AppendConstraint(&(pp.conlist), "process_count", (Rval) {xstrdup("true"), CF_SCALAR}, "any", false);
-    AppendConstraint(&(pp.conlist), "match_range", (Rval) {xstrdup("0,2"), CF_SCALAR}, "any", false);
-    AppendConstraint(&(pp.conlist), "process_result", (Rval) {xstrdup("process_owner.process_count"), CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&pp, "signals", (Rval) {signals, CF_LIST}, "any", false);
+    ConstraintAppendToPromise(&pp, "process_select", (Rval) {xstrdup("true"), CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&pp, "process_owner", (Rval) {owners, CF_LIST}, "any", false);
+    ConstraintAppendToPromise(&pp, "ifelapsed", (Rval) {xstrdup("0"), CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&pp, "process_count", (Rval) {xstrdup("true"), CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&pp, "match_range", (Rval) {xstrdup("0,2"), CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&pp, "process_result", (Rval) {xstrdup("process_owner.process_count"), CF_SCALAR}, "any", false);
 
     CfOut(cf_verbose, "", " -> Looking for cf-execd processes owned by %s", mypid);
 
@@ -596,13 +632,13 @@ typedef enum
     RELOAD_FULL
 } Reload;
 
-static Reload CheckNewPromises(void)
+static Reload CheckNewPromises(const ReportContext *report_context)
 {
     if (NewPromiseProposals())
     {
         CfOut(cf_verbose, "", " -> New promises detected...\n");
 
-        if (CheckPromises(cf_executor))
+        if (CheckPromises(AGENT_TYPE_EXECUTOR, report_context))
         {
             return RELOAD_FULL;
         }
@@ -620,7 +656,7 @@ static Reload CheckNewPromises(void)
     return RELOAD_ENVIRONMENT;
 }
 
-static bool ScheduleRun(void)
+static bool ScheduleRun(Policy **policy, ExecConfig *exec_config, const ReportContext *report_context)
 {
     Item *ip;
 
@@ -639,7 +675,7 @@ static bool ScheduleRun(void)
      * FIXME: this logic duplicates the one from cf-serverd.c. Unify ASAP.
      */
 
-    if (CheckNewPromises() == RELOAD_FULL)
+    if (CheckNewPromises(report_context) == RELOAD_FULL)
     {
         /* Full reload */
 
@@ -647,6 +683,8 @@ static bool ScheduleRun(void)
 
         DeleteAlphaList(&VHEAP);
         InitAlphaList(&VHEAP);
+        DeleteAlphaList(&VHARDHEAP);
+        InitAlphaList(&VHARDHEAP);
         DeleteAlphaList(&VADDCLASSES);
         InitAlphaList(&VADDCLASSES);
 
@@ -654,8 +692,6 @@ static bool ScheduleRun(void)
         IPADDRESSES = NULL;
 
         DeleteItemList(VNEGHEAP);
-
-        VSYSTEMHARDCLASS = unused1;
 
         DeleteAllScope();
 
@@ -665,11 +701,9 @@ static bool ScheduleRun(void)
         VNEGHEAP = NULL;
         VINPUTLIST = NULL;
 
-        DeleteBundles(BUNDLES);
-        DeleteBodies(BODIES);
+        PolicyDestroy(*policy);
+        *policy = NULL;
 
-        BUNDLES = NULL;
-        BODIES = NULL;
         ERRORCOUNT = 0;
 
         NewScope("sys");
@@ -685,12 +719,12 @@ static bool ScheduleRun(void)
         NewScope("remote_access");
 
         GetNameInfo3();
-        CfGetInterfaceInfo(cf_executor);
+        GetInterfacesInfo(AGENT_TYPE_EXECUTOR);
         Get3Environment();
         BuiltinClasses();
         OSClasses();
 
-        NewClass(THIS_AGENT);
+        HardClass(CF_AGENTTYPES[THIS_AGENT_TYPE]);
 
         SetReferenceTime(true);
 
@@ -698,8 +732,8 @@ static bool ScheduleRun(void)
             .bundlesequence = NULL
         };
 
-        ReadPromises(cf_executor, CF_EXECC, config);
-        KeepPromises();
+        *policy = ReadPromises(AGENT_TYPE_EXECUTOR, CF_EXECC, config, report_context);
+        KeepPromises(*policy, exec_config);
     }
     else
     {
@@ -709,6 +743,8 @@ static bool ScheduleRun(void)
         InitAlphaList(&VHEAP);
         DeleteAlphaList(&VADDCLASSES);
         InitAlphaList(&VADDCLASSES);
+        DeleteAlphaList(&VHARDHEAP);
+        InitAlphaList(&VHARDHEAP);
 
         DeleteItemList(IPADDRESSES);
         IPADDRESSES = NULL;
@@ -721,7 +757,7 @@ static bool ScheduleRun(void)
         NewScope("mon");
         NewScope("sys");
 
-        CfGetInterfaceInfo(cf_executor);
+        GetInterfacesInfo(AGENT_TYPE_EXECUTOR);
         Get3Environment();
         BuiltinClasses();
         OSClasses();
@@ -732,13 +768,14 @@ static bool ScheduleRun(void)
     {
         CfOut(cf_verbose, "", "Checking schedule %s...\n", ip->name);
 
-        if (IsDefinedClass(ip->name))
+        if (IsDefinedClass(ip->name, NULL))
         {
             CfOut(cf_verbose, "", "Waking up the agent at %s ~ %s \n", cf_ctime(&CFSTARTTIME), ip->name);
             return true;
         }
     }
 
+    CfOut(cf_verbose, "", "Nothing to do at %s\n", cf_ctime(&CFSTARTTIME));
     return false;
 }
 
@@ -755,6 +792,7 @@ ExecConfig *CopyExecConfig(const ExecConfig *config)
     copy->fq_name = xstrdup(config->fq_name);
     copy->ip_address = xstrdup(config->ip_address);
     copy->mail_max_lines = config->mail_max_lines;
+    copy->agent_expireafter = config->agent_expireafter;
 
     return copy;
 }

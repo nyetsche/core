@@ -23,18 +23,16 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: timeout.c                                                           */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "env_context.h"
+#include "cfstream.h"
+#include "verify_processes.h"
 
 /* Prototypes */
 
 static void AddTimeClass(time_t time);
+static void RemoveTimeClass(time_t time);
 
 /*************************************************************************/
 
@@ -82,6 +80,7 @@ void SetReferenceTime(int setclasses)
 
     if (setclasses)
     {
+        RemoveTimeClass(tloc);
         AddTimeClass(tloc);
     }
 }
@@ -100,6 +99,108 @@ void SetStartTime(void)
     CFINITSTARTTIME = tloc;
 
     CfDebug("Job start time set to %s\n", cf_ctime(&tloc));
+}
+
+/*********************************************************************/
+
+static void RemoveTimeClass(time_t time)
+{
+    int i, j;
+    struct tm parsed_time;
+    char buf[CF_BUFSIZE];
+
+    if (localtime_r(&time, &parsed_time) == NULL)
+    {
+        CfOut(cf_error, "localtime_r", "Unable to parse passed time");
+        return;
+    }
+
+/* Lifecycle */
+
+    for( i = 0; i < 3; i++ )
+    {
+        snprintf(buf, CF_BUFSIZE, "Lcycle_%d", i);
+        DeleteHardClass(buf);
+    }
+
+/* Year */
+
+    snprintf(buf, CF_BUFSIZE, "Yr%04d", parsed_time.tm_year - 1 + 1900);
+    DeleteHardClass(buf);
+    snprintf(buf, CF_BUFSIZE, "Yr%04d", parsed_time.tm_year + 1900);
+    DeleteHardClass(buf);
+
+/* Month */
+
+    for( i = 0; i < 12; i++ )
+    {
+        DeleteHardClass(MONTH_TEXT[i]);
+    }
+
+/* Day of week */
+
+    for( i = 0; i < 7; i++ )
+    {
+        DeleteHardClass(DAY_TEXT[i]);
+    }
+
+/* Day */
+
+    for( i = 1; i < 32; i++ )
+    {
+        snprintf(buf, CF_BUFSIZE, "Day%d", i);
+        DeleteHardClass(buf);
+    }
+
+/* Shift */
+
+    for( i = 0; i < 4; i++ )
+    {
+        DeleteHardClass(SHIFT_TEXT[i]);
+    }
+
+/* Hour */
+
+    for( i = 0; i < 24; i++ )
+    {
+        snprintf(buf, CF_BUFSIZE, "Hr%02d", i);
+        DeleteHardClass(buf);
+    }
+
+/* GMT hour */
+
+    for( i = 0; i < 24; i++ )
+    {
+        snprintf(buf, CF_BUFSIZE, "GMT_Hr%02d", i);
+        DeleteHardClass(buf);
+    }
+
+/* Quarter */
+
+    for( i = 1; i <= 4; i++ )
+    {
+        snprintf(buf, CF_BUFSIZE, "Q%d", i);
+        DeleteHardClass(buf);
+        for( j = 0; j < 24; j++ )
+        {
+            snprintf(buf, CF_BUFSIZE, "Hr%02d_Q%d", j, i);
+            DeleteHardClass(buf);
+        }
+    }
+
+/* Minute */
+
+    for( i = 0; i < 60; i++ )
+    {
+        snprintf(buf, CF_BUFSIZE, "Min%02d", i);
+        DeleteHardClass(buf);
+    }
+
+    for( i = 0; i < 60; i += 5 )
+    {
+        snprintf(buf, CF_BUFSIZE, "Min%02d_%02d", i, (i + 5) % 60);
+        DeleteHardClass(buf);
+    }
 }
 
 /*********************************************************************/
@@ -126,18 +227,18 @@ static void AddTimeClass(time_t time)
 /* Lifecycle */
 
     snprintf(buf, CF_BUFSIZE, "Lcycle_%d", ((parsed_time.tm_year + 1900) % 3));
-    NewClass(buf);
+    HardClass(buf);
 
 /* Year */
 
     snprintf(VYEAR, CF_BUFSIZE, "%04d", parsed_time.tm_year + 1900);
     snprintf(buf, CF_BUFSIZE, "Yr%04d", parsed_time.tm_year + 1900);
-    NewClass(buf);
+    HardClass(buf);
 
 /* Month */
 
     strlcpy(VMONTH, MONTH_TEXT[parsed_time.tm_mon], 4);
-    NewClass(MONTH_TEXT[parsed_time.tm_mon]);
+    HardClass(MONTH_TEXT[parsed_time.tm_mon]);
 
 /* Day of week */
 
@@ -146,46 +247,83 @@ static void AddTimeClass(time_t time)
    ...
    Sunday  is 0 in tm_wday, 6 in DAY_TEXT */
     day_text_index = (parsed_time.tm_wday + 6) % 7;
-    NewClass(DAY_TEXT[day_text_index]);
+    HardClass(DAY_TEXT[day_text_index]);
 
 /* Day */
 
     snprintf(VDAY, CF_BUFSIZE, "%d", parsed_time.tm_mday);
     snprintf(buf, CF_BUFSIZE, "Day%d", parsed_time.tm_mday);
-    NewClass(buf);
+    HardClass(buf);
 
 /* Shift */
 
     strcpy(VSHIFT, SHIFT_TEXT[parsed_time.tm_hour / 6]);
-    NewClass(VSHIFT);
+    HardClass(VSHIFT);
 
 /* Hour */
 
     snprintf(buf, CF_BUFSIZE, "Hr%02d", parsed_time.tm_hour);
-    NewClass(buf);
+    HardClass(buf);
 
 /* GMT hour */
 
     snprintf(buf, CF_BUFSIZE, "GMT_Hr%d\n", gmt_parsed_time.tm_hour);
-    NewClass(buf);
+    HardClass(buf);
 
 /* Quarter */
 
     quarter = parsed_time.tm_min / 15 + 1;
 
     snprintf(buf, CF_BUFSIZE, "Q%d", quarter);
-    NewClass(buf);
+    HardClass(buf);
     snprintf(buf, CF_BUFSIZE, "Hr%02d_Q%d", parsed_time.tm_hour, quarter);
-    NewClass(buf);
+    HardClass(buf);
 
 /* Minute */
 
     snprintf(buf, CF_BUFSIZE, "Min%02d", parsed_time.tm_min);
-    NewClass(buf);
+    HardClass(buf);
 
     interval_start = (parsed_time.tm_min / 5) * 5;
     interval_end = (interval_start + 5) % 60;
 
     snprintf(buf, CF_BUFSIZE, "Min%02d_%02d", interval_start, interval_end);
-    NewClass(buf);
+    HardClass(buf);
+}
+
+/*********************************************************************/
+
+bool IsReadReady(int fd, int timeout_sec)
+{
+    fd_set  rset;
+    FD_ZERO(&rset);
+    FD_SET(fd, &rset);
+
+    struct timeval tv = {
+        .tv_sec = timeout_sec,
+        .tv_usec = 0,
+    };
+
+    int ret = select(fd + 1, &rset, NULL, NULL, &tv);
+
+    if(ret < 0)
+    {
+        CfOut(cf_error, "select", "!! IsReadReady: Failed checking for data");
+        return false;
+    }
+
+    if(FD_ISSET(fd, &rset))
+    {
+        return true;
+    }
+
+    if(ret == 0)  // timeout
+    {
+        return false;
+    }
+
+    // can we get here?
+    CfOut(cf_error, "select", "!! IsReadReady: Unknown outcome (ret > 0 but our only fd is not set)");
+
+    return false;
 }

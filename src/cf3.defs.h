@@ -22,27 +22,570 @@
   included file COSL.txt.
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: cf3.defs.h                                                          */
-/*                                                                           */
-/*****************************************************************************/
-
 #ifndef CFENGINE_CF3_DEFS_H
 #define CFENGINE_CF3_DEFS_H
 
-#include "cf.defs.h"
+#include "platform.h"
 #include "rlist.h"
+#include "compiler.h"
 
-#ifndef NGROUPS
-# define NGROUPS 20
+#ifdef HAVE_LIBXML2
+#include <libxml/parser.h>
+#include <libxml/xpathInternals.h>
+#endif
+
+/*******************************************************************/
+/* Preprocessor tricks                                             */
+/*******************************************************************/
+
+/* Convert integer constant to string */
+#define STRINGIFY__INTERNAL_MACRO(x) #x
+#define TOSTRING(x) STRINGIFY__INTERNAL_MACRO(x)
+
+/*******************************************************************/
+/* Various defines                                                 */
+/*******************************************************************/
+
+#define CF_BUFSIZE 4096
+/* max size of plaintext in one transaction, see
+   net.c:SendTransaction(), leave space for encryption padding
+   (assuming max 64*8 = 512-bit cipher block size)*/
+#define CF_BILLION 1000000000L
+#define CF_EXPANDSIZE (2*CF_BUFSIZE)
+#define CF_BUFFERMARGIN 128
+#define CF_BLOWFISHSIZE 16
+#define CF_SMALLBUF 128
+#define CF_MAXVARSIZE 1024
+#define CF_MAXSIDSIZE 2048      /* Windows only: Max size (bytes) of security identifiers */
+#define CF_NONCELEN (CF_BUFSIZE/16)
+#define CF_MAXLINKSIZE 256
+#define CF_MAX_IP_LEN 64        /* numerical ip length */
+#define CF_PROCCOLS 16
+#define CF_HASHTABLESIZE 8192
+#define CF_MACROALPHABET 61     /* a-z, A-Z plus a bit */
+#define CF_ALPHABETSIZE 256
+#define CF_SAMEMODE 7777
+#define CF_SAME_OWNER ((uid_t)-1)
+#define CF_UNKNOWN_OWNER ((uid_t)-2)
+#define CF_SAME_GROUP ((gid_t)-1)
+#define CF_UNKNOWN_GROUP ((gid_t)-2)
+#define CF_INFINITY ((int)999999999)
+#define SOCKET_INVALID -1
+#define CF_MONDAY_MORNING 345600
+
+#define MINUTES_PER_HOUR 60
+#define SECONDS_PER_MINUTE 60
+#define SECONDS_PER_HOUR (60 * SECONDS_PER_MINUTE)
+#define SECONDS_PER_DAY (24 * SECONDS_PER_HOUR)
+#define SECONDS_PER_WEEK (7 * SECONDS_PER_DAY)
+
+/* Long-term monitoring constants */
+
+#define HOURS_PER_SHIFT 6
+#define SECONDS_PER_SHIFT (HOURS_PER_SHIFT * SECONDS_PER_HOUR)
+#define SHIFTS_PER_DAY 4
+#define SHIFTS_PER_WEEK (4*7)
+
+#define CF_INDEX_FIELD_LEN 7
+#define CF_INDEX_OFFSET  CF_INDEX_FIELD_LEN+1
+
+#define MAXIP4CHARLEN 16
+#define MAX_MONTH_NAME 9
+
+#define MAX_DIGEST_BYTES (512 / 8)  /* SHA-512 */
+#define MAX_DIGEST_HEX (MAX_DIGEST_BYTES * 2)
+
+#define CF_EDIT_IFELAPSED 3     /* NOTE: If doing copy template then edit working copy,
+                                   the edit ifelapsed must not be higher than
+                                   the copy ifelapsed. This will make the working
+                                   copy equal to the copied template file - not the
+                                   copied + edited file. */
+
+
+/*******************************************************************/
+
+#define CF_FILECHANGE     "file_change.log"
+#define CF_FILECHANGE_NEW "file_changes.log"
+#define CF_PROMISE_LOG    "promise_summary.log"
+
+#define CF_ENV_FILE      "env_data"
+
+#define CF_SAVED ".cfsaved"
+#define CF_EDITED ".cfedited"
+#define CF_NEW ".cfnew"
+#define CFD_TERMINATOR "---cfXen/gine/cfXen/gine---"
+#define CFD_TRUE "CFD_TRUE"
+#define CFD_FALSE "CFD_FALSE"
+#define CF_ANYCLASS "any"
+#define CF_RSA_PROTO_OFFSET 24
+#define CF_PROTO_OFFSET 16
+#define CF_INBAND_OFFSET 8
+#define CF_SMALL_OFFSET 2
+
+/* digest sizes */
+#define CF_MD5_LEN 16
+#define CF_SHA_LEN 20
+#define CF_SHA1_LEN 20
+#define CF_BEST_LEN 0
+#define CF_CRYPT_LEN 64
+#define CF_SHA224_LEN 28
+#define CF_SHA256_LEN 32
+#define CF_SHA384_LEN 48
+#define CF_SHA512_LEN 64
+
+#define CF_DONE 't'
+#define CF_MORE 'm'
+#define CF_NS ':'   // namespace character separator
+
+/*****************************************************************************/
+
+/* Auditing key */
+
+#define CF_NOP      'n'
+#define CF_CHG      'c'
+#define CF_WARN     'w'         /* something wrong but nothing done */
+#define CF_FAIL     'f'
+#define CF_DENIED   'd'
+#define CF_TIMEX    't'
+#define CF_INTERPT  'i'
+#define CF_REGULAR  'r'
+#define CF_REPORT   'R'
+#define CF_UNKNOWN  'u'
+
+/*****************************************************************************/
+
+#define CF_FAILEDSTR "BAD: Unspecified server refusal (see verbose server output)"
+#define CF_CHANGEDSTR1 "BAD: File changed "     /* Split this so it cannot be recognized */
+#define CF_CHANGEDSTR2 "while copying"
+
+#define CF_START_DOMAIN "undefined.domain"
+
+#define CF_GRAINS   64
+#define ATTR        20
+#define CF_NETATTR   7          /* icmp udp dns tcpsyn tcpfin tcpack */
+#define CF_MEASURE_INTERVAL (5.0*60.0)
+#define CF_SHIFT_INTERVAL (6*3600)
+
+#define CF_OBSERVABLES 100
+
+/* Output control defines */
+
+#define CfDebug   if (DEBUG) printf
+
+#include "statistics.h"
+
+typedef struct
+{
+    time_t t;
+    QPoint Q;
+} Event;
+
+typedef struct
+{
+    time_t last_seen;
+    QPoint Q[CF_OBSERVABLES];
+} Averages;
+
+/******************************************************************/
+
+typedef struct
+{
+    pid_t pid;
+    time_t time;
+} LockData;
+
+/*****************************************************************************/
+
+#ifdef MINGW
+# define NULLFILE "nul"
+# define EXEC_SUFFIX ".exe"
+#else
+# define NULLFILE "/dev/null"
+# define EXEC_SUFFIX ""
+#endif /* NOT MINGW */
+
+#define CF_AUDIT_COMMENT 128
+#define CF_AUDIT_VERSION 64
+#define CF_AUDIT_DATE    32
+
+/* key includes operation and date */
+typedef struct
+{
+    char operator[CF_AUDIT_COMMENT];
+    char comment[CF_AUDIT_COMMENT];
+    char filename[CF_AUDIT_COMMENT];
+    char bundle[CF_AUDIT_VERSION];      /* not used in cf2 */
+    char version[CF_AUDIT_VERSION];
+    char date[CF_AUDIT_DATE];
+    short line_number;
+    char status;
+} AuditLog;
+
+/*******************************************************************/
+/* Client server defines                                           */
+/*******************************************************************/
+
+enum PROTOS
+{
+    cfd_exec,
+    cfd_auth,
+    cfd_get,
+    cfd_opendir,
+    cfd_synch,
+    cfd_classes,
+    cfd_md5,
+    cfd_smd5,
+    cfd_cauth,
+    cfd_sauth,
+    cfd_ssynch,
+    cfd_sget,
+    cfd_version,
+    cfd_sopendir,
+    cfd_var,
+    cfd_svar,
+    cfd_context,
+    cfd_scontext,
+    cfd_squery,
+    cfd_call_me_back,
+    cfd_bad
+};
+
+#define CF_WORDSIZE 8           /* Number of bytes in a word */
+
+/*******************************************************************/
+
+enum cf_filetype
+{
+    cf_reg,
+    cf_link,
+    cf_dir,
+    cf_fifo,
+    cf_block,
+    cf_char,
+    cf_sock
+};
+
+/*******************************************************************/
+
+enum roles
+{
+    cf_connect,
+    cf_accept
+};
+
+/*******************************************************************/
+
+typedef struct Stat_ Stat;
+
+struct Stat_
+{
+    char *cf_filename;          /* What file are we statting? */
+    char *cf_server;            /* Which server did this come from? */
+    enum cf_filetype cf_type;   /* enum filetype */
+    mode_t cf_lmode;            /* Mode of link, if link */
+    mode_t cf_mode;             /* Mode of remote file, not link */
+    uid_t cf_uid;               /* User ID of the file's owner */
+    gid_t cf_gid;               /* Group ID of the file's group */
+    off_t cf_size;              /* File size in bytes */
+    time_t cf_atime;            /* Time of last access */
+    time_t cf_mtime;            /* Time of last data modification */
+    time_t cf_ctime;            /* Time of last file status change */
+    char cf_makeholes;          /* what we need to know from blksize and blks */
+    char *cf_readlink;          /* link value or NULL */
+    int cf_failed;              /* stat returned -1 */
+    int cf_nlink;               /* Number of hard links */
+    int cf_ino;                 /* inode number on server */
+    dev_t cf_dev;               /* device number */
+    Stat *next;
+};
+
+/*******************************************************************/
+
+typedef struct Item_ Item;
+
+// Indexed itemlist
+typedef struct
+{
+    Item *list[CF_ALPHABETSIZE];
+} AlphaList;
+
+/*******************************************************************/
+
+enum cfsizes
+{
+    cfabs,
+    cfpercent
+};
+
+/*******************************************************************/
+
+enum statepolicy
+{
+    cfreset,                    /* Policy when trying to add already defined persistent states */
+    cfpreserve
+};
+
+/*******************************************************************/
+
+enum classes
+{
+    hard_class_unknown,
+    hp,
+    aix,
+    linuxx,
+    solaris,
+    freebsd,
+    netbsd,
+    crayos,
+    cfnt,
+    unix_sv,
+    openbsd,
+    cfsco,
+    darwin,
+    qnx,
+    dragonfly,
+    mingw,
+    vmware,
+    HARD_CLASSES_MAX,
+};
+
+/*******************************************************************/
+
+enum iptypes
+{
+    icmp,
+    udp,
+    dns,
+    tcpsyn,
+    tcpack,
+    tcpfin,
+    tcpmisc
+};
+
+enum observables
+{
+    ob_users,
+    ob_rootprocs,
+    ob_otherprocs,
+    ob_diskfree,
+    ob_loadavg,
+    ob_netbiosns_in,
+    ob_netbiosns_out,
+    ob_netbiosdgm_in,
+    ob_netbiosdgm_out,
+    ob_netbiosssn_in,
+    ob_netbiosssn_out,
+    ob_imap_in,
+    ob_imap_out,
+    ob_cfengine_in,
+    ob_cfengine_out,
+    ob_nfsd_in,
+    ob_nfsd_out,
+    ob_smtp_in,
+    ob_smtp_out,
+    ob_www_in,
+    ob_www_out,
+    ob_ftp_in,
+    ob_ftp_out,
+    ob_ssh_in,
+    ob_ssh_out,
+    ob_wwws_in,
+    ob_wwws_out,
+    ob_icmp_in,
+    ob_icmp_out,
+    ob_udp_in,
+    ob_udp_out,
+    ob_dns_in,
+    ob_dns_out,
+    ob_tcpsyn_in,
+    ob_tcpsyn_out,
+    ob_tcpack_in,
+    ob_tcpack_out,
+    ob_tcpfin_in,
+    ob_tcpfin_out,
+    ob_tcpmisc_in,
+    ob_tcpmisc_out,
+    ob_webaccess,
+    ob_weberrors,
+    ob_syslog,
+    ob_messages,
+    ob_temp0,
+    ob_temp1,
+    ob_temp2,
+    ob_temp3,
+    ob_cpuall,
+    ob_cpu0,
+    ob_cpu1,
+    ob_cpu2,
+    ob_cpu3,
+    ob_microsoft_ds_in,
+    ob_microsoft_ds_out,
+    ob_www_alt_in,
+    ob_www_alt_out,
+    ob_imaps_in,
+    ob_imaps_out,
+    ob_ldap_in,
+    ob_ldap_out,
+    ob_ldaps_in,
+    ob_ldaps_out,
+    ob_mongo_in,
+    ob_mongo_out,
+    ob_mysql_in,
+    ob_mysql_out,
+    ob_postgresql_in,
+    ob_postgresql_out,
+    ob_ipp_in,
+    ob_ipp_out,
+    ob_spare
+};
+
+typedef struct
+{
+    char *portnr;
+    char *name;
+    enum observables in;
+    enum observables out;
+} Sock;
+
+/*******************************************************************/
+
+typedef struct
+{
+    int sd;
+    int trust;                  /* true if key being accepted on trust */
+    int authenticated;
+    int protoversion;
+    int family;                 /* AF_INET or AF_INET6 */
+    char username[CF_SMALLBUF];
+    char localip[CF_MAX_IP_LEN];
+    char remoteip[CF_MAX_IP_LEN];
+    unsigned char digest[EVP_MAX_MD_SIZE + 1];
+    unsigned char *session_key;
+    char encryption_type;
+    short error;
+} AgentConnection;
+
+/*******************************************************************/
+
+typedef struct CompressedArray_ CompressedArray;
+
+struct CompressedArray_
+{
+    int key;
+    char *value;
+    CompressedArray *next;
+};
+
+/*******************************************************************/
+
+typedef struct Audit_ Audit;
+
+struct Audit_
+{
+    char *version;
+    char *filename;
+    char *date;
+    unsigned char digest[EVP_MAX_MD_SIZE + 1];
+    Audit *next;
+};
+
+/*******************************************************************/
+/* Action /promise types                                           */
+/*******************************************************************/
+
+struct Item_
+{
+    char done;
+    char *name;
+    char *classes;
+    int counter;
+    time_t time;
+    Item *next;
+};
+
+/*******************************************************************/
+
+typedef struct UidList_ UidList;
+
+struct UidList_
+{
+#ifdef MINGW                    // TODO: remove uid for NT ?
+    char sid[CF_MAXSIDSIZE];    /* Invalid sid indicates unset */
+#endif                          /* MINGW */
+    uid_t uid;
+    char *uidname;              /* when uid is -2 */
+    UidList *next;
+};
+
+/*******************************************************************/
+
+typedef struct GidList_ GidList;
+
+struct GidList_
+{
+    gid_t gid;
+    char *gidname;              /* when gid is -2 */
+    GidList *next;
+};
+
+/*******************************************************************/
+
+enum matchtypes
+{
+    literalStart,
+    literalComplete,
+    literalSomewhere,
+    regexComplete,
+    NOTliteralStart,
+    NOTliteralComplete,
+    NOTliteralSomewhere,
+    NOTregexComplete
+};
+
+/*******************************************************************/
+
+typedef struct Auth_ Auth;
+
+struct Auth_
+{
+    char *path;
+    Item *accesslist;
+    Item *maproot;              /* which hosts should have root read access */
+    int encrypt;                /* which files HAVE to be transmitted securely */
+    int literal;
+    int classpattern;
+    int variable;
+    Auth *next;
+};
+
+/*******************************************************************/
+/* Checksum database structures                                    */
+/*******************************************************************/
+
+typedef struct
+{
+    unsigned char mess_digest[EVP_MAX_MD_SIZE + 1];     /* Content digest */
+    unsigned char attr_digest[EVP_MAX_MD_SIZE + 1];     /* Attribute digest */
+} ChecksumValue;
+
+/*******************************************************************/
+/* File path manipulation primitives                               */
+/*******************************************************************/
+
+/* Defined maximum length of a filename. */
+
+/* File node separator (cygwin can use \ or / but prefer \ for communicating
+ * with native windows commands). */
+
+#ifdef NT
+# define IsFileSep(c) ((c) == '\\' || (c) == '/')
+#else
+# define IsFileSep(c) ((c) == '/')
 #endif
 
 /*************************************************************************/
 /* Fundamental (meta) types                                              */
 /*************************************************************************/
-
-#define CF3COPYRIGHT "Copyright (C) CFEngine AS 2008,2010-"
 
 #define CF_SCALAR 's'
 #define CF_LIST   'l'
@@ -56,31 +599,15 @@
 #define CF_UNDEFINED -1
 #define CF_NODOUBLE -123.45
 #define CF_NOINT    -678L
-#define CF_ANYUSER  (uid_t)-1
-#define CF_ANYGROUP (gid_t)-1
 #define CF_UNDEFINED_ITEM (void *)0x1234
 #define CF_VARARGS 99
 #define CF_UNKNOWN_IP "location unknown"
-
-#define CF_INBODY   1
-#define CF_INBUNDLE 2
 
 #define CF_MAX_NESTING 10
 #define CF_MAX_REPLACE 20
 #define CF_DONEPASSES  4
 
-#define CF_TIME_SIZE 32
-#define CF_FIPS_SIZE 32
-
 #define CFPULSETIME 60
-
-/*************************************************************************/
-/** Design criteria                                                      */
-/*************************************************************************/
-
-#define CF_DUNBAR_INTIMATE 6
-#define CF_DUNBAR_WORK 30
-#define CF_DUNBAR_KNOW 120
 
 /*************************************************************************/
 /* Parsing and syntax tree structures                                    */
@@ -93,6 +620,7 @@ extern const int CF3_MODULES;
 
 /*************************************************************************/
 
+typedef struct Policy_ Policy;
 typedef struct Bundle_ Bundle;
 typedef struct Body_ Body;
 typedef struct Promise_ Promise;
@@ -162,20 +690,43 @@ enum cfx_format
 #define CF_REPORTC  "reporter"
 #define CF_KEYGEN   "keygenerator"
 #define CF_HUBC     "hub"
+#define CF_GENDOC   "gendoc"
 
-enum cfagenttype
+typedef enum
 {
-    cf_common,
-    cf_agent,
-    cf_server,
-    cf_monitor,
-    cf_executor,
-    cf_runagent,
-    cf_know,
-    cf_report,
-    cf_keygen,
-    cf_hub,
-    cf_noagent
+    AGENT_TYPE_COMMON,
+    AGENT_TYPE_AGENT,
+    AGENT_TYPE_SERVER,
+    AGENT_TYPE_MONITOR,
+    AGENT_TYPE_EXECUTOR,
+    AGENT_TYPE_RUNAGENT,
+    AGENT_TYPE_KNOW,
+    AGENT_TYPE_REPORT,
+    AGENT_TYPE_KEYGEN,
+    AGENT_TYPE_HUB,
+    AGENT_TYPE_GENDOC,
+    AGENT_TYPE_NOAGENT
+} AgentType;
+
+enum typesequence
+{
+    kp_meta,
+    kp_vars,
+    kp_defaults,
+    kp_classes,
+    kp_outputs,
+    kp_interfaces,
+    kp_files,
+    kp_packages,
+    kp_environments,
+    kp_methods,
+    kp_processes,
+    kp_services,
+    kp_commands,
+    kp_storage,
+    kp_databases,
+    kp_reports,
+    kp_none
 };
 
 /*************************************************************************/
@@ -262,6 +813,7 @@ enum cfexcontrol
     cfex_schedule,
     cfex_executorfacility,
     cfex_execcommand,
+    cfex_agent_expireafter,
     cfex_notype,
 };
 
@@ -303,6 +855,8 @@ enum cfscontrol
     cfs_auditing,
     cfs_bindtointerface,
     cfs_cfruncommand,
+    cfs_call_collect_interval,
+    cfs_collect_window,
     cfs_denybadclocks,
     cfs_denyconnects,
     cfs_dynamicaddresses,
@@ -315,6 +869,7 @@ enum cfscontrol
     cfs_serverfacility,
     cfs_skipverify,
     cfs_trustkeysfrom,
+    cfs_listen,
     cfs_notype,
 };
 
@@ -369,7 +924,6 @@ enum cfrecontrol
 enum cfhcontrol
 {
     cfh_export_zenoss,
-    cfh_federation,
     cfh_exclude_hosts,
     cfh_schedule,
     cfh_port,
@@ -438,8 +992,8 @@ enum cfeditorder
 
 #define CF_MODERANGE   "[0-7augorwxst,+-]+"
 #define CF_BSDFLAGRANGE "[+-]*[(arch|archived|nodump|opaque|sappnd|sappend|schg|schange|simmutable|sunlnk|sunlink|uappnd|uappend|uchg|uchange|uimmutable|uunlnk|uunlink)]+"
-#define CF_CLASSRANGE  "[a-zA-Z0-9_!&@@$|.()\\[\\]{}]+"
-#define CF_IDRANGE     "[a-zA-Z0-9_$(){}\\[\\].]+"
+#define CF_CLASSRANGE  "[a-zA-Z0-9_!&@@$|.()\\[\\]{}:]+"
+#define CF_IDRANGE     "[a-zA-Z0-9_$(){}\\[\\].:]+"
 #define CF_USERRANGE   "[a-zA-Z0-9_$.-]+"
 #define CF_IPRANGE     "[a-zA-Z0-9_$(){}.:-]+"
 #define CF_FNCALLRANGE "[a-zA-Z0-9_(){}.$@]+"
@@ -464,133 +1018,29 @@ enum cfeditorder
 
 #define SOFTWARE_PACKAGES_CACHE "software_packages.csv"
 
-/***************************************************************************/
-/* Knowledge relationships                                                 */
-/***************************************************************************/
+/*************************************************************************/
 
-enum storytype
+typedef enum
 {
-    cfi_cause,
-    cfi_connect,
-    cfi_part,
-    cfi_access,
-    cfi_none
-};
+    REPORT_OUTPUT_TYPE_TEXT,
+    REPORT_OUTPUT_TYPE_HTML,
+    REPORT_OUTPUT_TYPE_KNOWLEDGE,
 
-#define KM_AFFECTS_CERT_F "affects"
-#define KM_AFFECTS_CERT_B "is affected by"
-#define KM_CAUSE_CERT_F "causes"
-#define KM_CAUSE_CERT_B "is caused by"
-#define KM_PARTOF_CERT_F "is/are a part of"
-#define KM_PARTOF_CERT_B "has/have a part"
-#define KM_DETERMINES_CERT_F "determine(s)"
-#define KM_DETERMINES_CERT_B "is/are determined by"
-#define KM_CONTRIBUTES_CERT_F "contibutes to"
-#define KM_CONTRIBUTES_CERT_B "is contibuted to by"
-#define KM_USES_CERT_F "use(s)"
-#define KM_USES_CERT_B "is/are used by"
-#define KM_PROVIDES_CERT_F "provide(s)"
-#define KM_PROVIDES_CERT_B "is/are provided by"
-#define KM_BELONGS_CERT_F "belongs to"
-#define KM_BELONGS_CERT_B "owns"
-#define KM_CONNECTS_CERT_F "connects to"
-#define KM_CONNECTS_CERT_B "connects to"
-#define KM_NEEDS_CERT_F "need(s)"
-#define KM_NEEDS_CERT_B "is needed by"
-#define KM_EQUIV_CERT_F "is equivalent to"
-#define KM_EQUIV_CERT_B "is equivalent to"
-#define KM_SHIELD_CERT_F "denies access from"
-#define KM_SHIELD_CERT_B "is not allowed access to"
-#define KM_ACCESS_CERT_F "grants access to"
-#define KM_ACCESS_CERT_B "is allowed to access"
-#define KM_MONITOR_CERT_F "monitor(s)"
-#define KM_MONITOR_CERT_B "is/are monitored by"
-#define KM_LOCATED_CERT_F "is located in"
-#define KM_LOCATED_CERT_B "situates"
-#define KM_REPAIR_CERT_F "repairs"
-#define KM_REPAIR_CERT_B "is repaired by"
+    REPORT_OUTPUT_TYPE_MAX
+} ReportOutputType;
 
-#define KM_CAUSE_POSS_F "can cause"
-#define KM_CAUSE_POSS_B "can be caused by"
-#define KM_PARTOF_POSS_F "can be a part of"
-#define KM_PARTOF_POSS_B "can have a part"
-#define KM_DETERMINES_POSS_F "can determine"
-#define KM_DETERMINES_POSS_B "can be determined by"
-#define KM_CONTRIBUTES_POSS_F "can contibute to"
-#define KM_CONTRIBUTES_POSS_B "can be contibuted to by"
-#define KM_USES_POSS_F "can use"
-#define KM_USES_POSS_B "can be used by"
-#define KM_PROVIDES_POSS_F "can provide"
-#define KM_PROVIDES_POSS_B "can be provided by"
-#define KM_BELONGS_POSS_F "can belong to"
-#define KM_BELONGS_POSS_B "can own"
-#define KM_AFFECTS_POSS_F "can affect"
-#define KM_AFFECTS_POSS_B "can be affected by"
-#define KM_CONNECTS_POSS_F "can connect to"
-#define KM_CONNECTS_POSS_B "can connect to"
-#define KM_NEEDS_POSS_F "can need"
-#define KM_NEEDS_POSS_B "can be needed by"
-#define KM_EQUIV_POSS_F "can be equivalent to"
-#define KM_EQUIV_POSS_B "can be equivalent to"
-#define KM_MONITOR_POSS_F "can monitor"
-#define KM_MONITOR_POSS_B "can be monitored by"
-#define KM_ACCESS_POSS_F "can access to"
-#define KM_ACCESS_POSS_B "can be allowed to access"
-#define KM_LOCATED_POSS_F "can be located in"
-#define KM_LOCATED_POSS_B "can situate"
-#define KM_REPAIR_POSS_F "can repair"
-#define KM_REPAIR_POSS_B "can be repaired by"
-
-#define KM_CAUSE_UNCERT_F "might cause"
-#define KM_CAUSE_UNCERT_B "might be caused by"
-#define KM_PARTOF_UNCERT_F "might be a part of"
-#define KM_PARTOF_UNCERT_B "might have a part"
-#define KM_DETERMINES_UNCERT_F "might determine"
-#define KM_DETERMINES_UNCERT_B "might be determined by"
-#define KM_CONTRIBUTES_UNCERT_F "might contibute to"
-#define KM_CONTRIBUTES_UNCERT_B "might be contibuted to by"
-#define KM_USES_UNCERT_F "might use"
-#define KM_USES_UNCERT_B "might be used by"
-#define KM_PROVIDES_UNCERT_F "might provide"
-#define KM_PROVIDES_UNCERT_B "might be provided by"
-#define KM_BELONGS_UNCERT_F "might belong to"
-#define KM_BELONGS_UNCERT_B "might own"
-#define KM_AFFECTS_UNCERT_F "might affect"
-#define KM_AFFECTS_UNCERT_B "might be affected by"
-#define KM_CONNECTS_UNCERT_F "might connect to"
-#define KM_CONNECTS_UNCERT_B "might connect to"
-#define KM_NEEDS_UNCERT_F "might need"
-#define KM_NEEDS_UNCERT_B "might be needed by"
-#define KM_EQUIV_UNCERT_F "might be equivalent to"
-#define KM_EQUIV_UNCERT_B "might be equivalent to"
-#define KM_SHIELD_UNCERT_F "might deny access from"
-#define KM_SHIELD_UNCERT_B "might not be allowed access to"
-#define KM_MONITOR_UNCERT_F "might monitor"
-#define KM_MONITOR_UNCERT_B "might be monitored by"
-#define KM_ACCESS_UNCERT_F "might grant access to"
-#define KM_ACCESS_UNCERT_B "might be allowed to access"
-#define KM_LOCATED_UNCERT_F "might be located in"
-#define KM_LOCATED_UNCERT_B "might situate"
-#define KM_REPAIR_UNCERT_F "might repair"
-#define KM_REPAIR_UNCERT_B "might be repaired by"
-
-#define KM_GENERALIZES_F "is a generalization of"
-#define KM_GENERALIZES_B "is a special case of"
-#define KM_SYNONYM "is a synonym for"
-
-enum knowledgecertainty
+typedef struct
 {
-    cfk_certain,
-    cfk_uncertain,
-    cfk_possible
-};
+    Writer *report_writers[REPORT_OUTPUT_TYPE_MAX];
+} ReportContext;
+
 
 /*************************************************************************/
 
 typedef struct
 {
     const char *lval;
-    enum cfdatatype dtype;
+    const enum cfdatatype dtype;
     const void *range;          /* either char or BodySyntax * */
     const char *description;
     const char *default_value;
@@ -600,8 +1050,8 @@ typedef struct
 
 typedef struct
 {
-    char *btype;
-    char *subtype;
+    const char *bundle_type;
+    const char *subtype;
     const BodySyntax *bs;
 } SubTypeSyntax;
 
@@ -642,12 +1092,16 @@ typedef struct
 
 struct Bundle_
 {
+    Policy *parent_policy;
+
     char *type;
     char *name;
+    char *namespace;
     Rlist *args;
     SubType *subtypes;
     struct Bundle_ *next;
 
+    char *source_path;
     SourceOffset offset;
 };
 
@@ -657,12 +1111,16 @@ typedef struct Constraint_ Constraint;
 
 struct Body_
 {
+    Policy *parent_policy;
+
     char *type;
     char *name;
+    char *namespace;
     Rlist *args;
     Constraint *conlist;
     Body *next;
 
+    char *source_path;
     SourceOffset offset;
 };
 
@@ -688,6 +1146,10 @@ typedef struct
     Item *file_classes;
     int num_edits;
     int empty_first;
+#ifdef HAVE_LIBXML2
+    xmlDocPtr xmldoc;
+#endif
+
 } EditContext;
 
 /*************************************************************************/
@@ -710,6 +1172,7 @@ struct Promise_
 
     char *agentsubtype;         /* cache the promise subtype */
     char *bundletype;           /* cache the agent type */
+    char *namespace;            /* cache the namespace */
     int done;                   /* this needs to be preserved across runs */
     int *donep;                 /* used by locks to mark as done */
     int makeholes;
@@ -720,7 +1183,7 @@ struct Promise_
     CompressedArray *inode_cache;
     EditContext *edcontext;
     dev_t rootdevice;           /* for caching during work */
-    Promise *org_pp;            /* A ptr to the unexpanded raw promise */
+    const Promise *org_pp;            /* A ptr to the unexpanded raw promise */
 
     SourceOffset offset;
 };
@@ -755,7 +1218,7 @@ struct FnCall_
 {
     char *name;
     Rlist *args;
-    int argc;
+    char *namespace;
 };
 
 /*******************************************************************/
@@ -999,6 +1462,16 @@ typedef enum
 
 /************************************************************************************/
 
+typedef enum
+{
+    cf_file_new,
+    cf_file_removed,
+    cf_file_content_changed,
+    cf_file_stats_changed
+}FileState;
+
+/************************************************************************************/
+
 enum cf_acl_method
 {
     cfacl_append,
@@ -1068,7 +1541,7 @@ enum cfd_menu
 {
     cfd_menu_delta,
     cfd_menu_full,
-    cfd_menu_relay,
+    cfd_collect_call,
     cfd_menu_error
 };
 
@@ -1177,6 +1650,7 @@ struct Topic_
     int id;
     char *topic_context;
     char *topic_name;
+    char *bundle;
     double evc;
     TopicAssociation *associations;
     Topic *next;
@@ -1198,6 +1672,7 @@ struct Occurrence_
 {
     char *occurrence_context;
     char *locator;                 /* Promiser */
+    char *bundle;
     enum representations rep_type;
     Rlist *represents;
     Rlist *about_topics;    
@@ -1245,7 +1720,7 @@ typedef struct
 
 typedef struct
 {
-    enum cfagenttype agent;
+    AgentType agent;
     char *scopeid;
     Promise *pp;
     void *fnptr;
@@ -1310,13 +1785,6 @@ typedef struct
     short portnumber;
     short timeout;
 } FileCopy;
-
-typedef struct
-{
-    char *server;
-    AgentConnection *conn;
-    int busy;
-} ServerItem;
 
 /*************************************************************************/
 
@@ -1468,7 +1936,7 @@ typedef struct
     Constraint *expression;
     int nconstraints;
     int persistent;
-} Context;
+} ContextConstraint;
 
 /*************************************************************************/
 
@@ -1479,6 +1947,7 @@ typedef struct
     int maxfilesize;
     int joinlines;
     int rotate;
+    int inherit;
 } EditDefaults;
 
 /*************************************************************************/
@@ -1492,6 +1961,16 @@ typedef struct
     Rlist *contains_from_list;
     Rlist *not_contains_from_list;
 } LineSelect;
+
+typedef struct
+{
+    char *build_xpath;
+    char *select_xpath;
+    char *attribute_value;
+    int havebuildxpath;
+    int haveselectxpath;
+    int haveattributevalue;
+} EditXml;
 
 typedef struct
 {
@@ -1553,6 +2032,7 @@ typedef struct
     int haveprintfile;
     int havelastseen;
     int lastseen;
+    char *result;
     double intermittency;
     char *friend_pattern;
     char *filename;
@@ -1572,6 +2052,8 @@ typedef struct
     enum version_cmp package_select;
     enum action_policy package_changes;
     Rlist *package_file_repositories;
+
+    char *package_default_arch_command;
 
     char *package_list_command;
     char *package_list_version_regex;
@@ -1601,17 +2083,32 @@ typedef struct
     char *package_name_convention;
     char *package_delete_convention;
 
+    bool package_commands_useshell;
+
     char *package_multiline_start;
+
+    char *package_version_less_command;
+    char *package_version_equal_command;
 
     int package_noverify_returncode;
 } Packages;
 
 /*************************************************************************/
 
+enum cfmeasurepolicy
+{
+    cfm_average,
+    cfm_sum,
+    cfm_first,
+    cfm_last,
+    cfm_nomeasure
+};
+
 typedef struct
 {
     char *stream_type;
     enum cfdatatype data_type;
+    enum cfmeasurepolicy policy;
     char *history_type;
     char *select_line_matching;
     int select_line_number;
@@ -1652,6 +2149,8 @@ enum cf_srv_policy
     cfsrv_start,
     cfsrv_stop,
     cfsrv_disable,
+    cfsrv_restart,
+    cfsrv_reload,
     cfsrv_nostatus
 };
 
@@ -1681,6 +2180,7 @@ enum cfhypervisors
     cfv_virt_xen,
     cfv_virt_kvm,
     cfv_virt_esx,
+    cfv_virt_vbox,
     cfv_virt_test,
     cfv_virt_xen_net,
     cfv_virt_kvm_net,
@@ -1702,6 +2202,26 @@ enum cfenvironment_state
     cfvs_none
 };
 
+/*************************************************************************/
+
+enum cf_meter
+{
+    meter_compliance_week,
+    meter_compliance_day,
+    meter_compliance_hour,
+    meter_perf_day,
+    meter_other_day,
+    meter_comms_hour,
+    meter_anomalies_day,
+    meter_compliance_week_user,
+    meter_compliance_week_internal,
+    meter_compliance_day_user,
+    meter_compliance_day_internal,
+    meter_compliance_hour_user,
+    meter_compliance_hour_internal,
+    meter_endmark
+};
+
 typedef struct
 {
     int cpus;
@@ -1716,9 +2236,7 @@ typedef struct
     enum cfenvironment_state state;
 } Environments;
 
-/*************************************************************************/
-
- /* This is huge, but the simplification of logic is huge too
+/* This is huge, but the simplification of logic is huge too
     so we leave it to the compiler to optimize */
 
 typedef struct
@@ -1733,7 +2251,7 @@ typedef struct
     FileLink link;
     EditDefaults edits;
     Packages packages;
-    Context context;
+    ContextConstraint context;
     Measurement measure;
     Acl acl;
     Database database;
@@ -1746,6 +2264,7 @@ typedef struct
     int touch;
     int create;
     int move_obstructions;
+    int inherit;
 
     Recursion recursion;
     TransactionContext transaction;
@@ -1793,6 +2312,7 @@ typedef struct
     EditLocation location;
     EditColumn column;
     EditReplace replace;
+    EditXml xml;
     int haveregion;
     int havelocation;
     int havecolumn;
@@ -1819,43 +2339,12 @@ typedef struct
     char *rep_type;
 } Attributes;
 
-enum cf_meter
-{
-    meter_compliance_week,
-    meter_compliance_day,
-    meter_compliance_hour,
-    meter_perf_day,
-    meter_other_day,
-    meter_comms_hour,
-    meter_anomalies_day,
-    meter_endmark
-};
-
 /*************************************************************************/
 /* definitions for reporting                                            */
 /*************************************************************************/
 
 extern double METER_KEPT[meter_endmark];
 extern double METER_REPAIRED[meter_endmark];
-extern double Q_MEAN;
-extern double Q_SIGMA;
-
-/*************************************************************************/
-/* definitions for test suite                                            */
-/*************************************************************************/
-
-// Classes: 601 - 650
-#define CF_CLASS_ALL 0
-#define CF_CLASS_REPORT 2
-#define CF_CLASS_VARS 4
-#define CF_CLASS_SLIST 8
-#define CF_CLASS_STRING 16
-#define CF_CLASS_PROCESS 32
-#define CF_CLASS_FILE 64
-#define CF_CLASS_DIR 128
-#define CF_CLASS_CMD 256
-#define CF_CLASS_OTHER 512
-#define CF_CLASS_TOP10 1024
 
 /*************************************************************************/
 /* common macros                                                         */
@@ -1874,99 +2363,27 @@ extern double Q_SIGMA;
   || IsStrIn(c,MONTH_TEXT) || IsStrIn(c,DAY_TEXT)                  \
   || IsStrIn(c,SHIFT_TEXT)) || strncmp(c,"Lcycle",6) == 0
 
-/***********************************************************/
-/* SYNTAX MODULES                                          */
-/***********************************************************/
-
-#ifndef CF3_MOD_COMMON
-extern SubTypeSyntax CF_COMMON_SUBTYPES[];
-extern SubTypeSyntax *CF_ALL_SUBTYPES[];
-extern const BodySyntax CF_COMMON_BODIES[];
-
-extern const BodySyntax CF_VARBODY[];
-extern const BodySyntax CF_CLASSBODY[];
-extern const BodySyntax CFG_CONTROLBODY[];
-extern const BodySyntax CFH_CONTROLBODY[];
-extern const BodySyntax CFA_CONTROLBODY[];
-extern const SubTypeSyntax CF_ALL_BODIES[];
-#endif
-
-#ifndef CF3_MOD_ENVIRON
-extern SubTypeSyntax CF_ENVIRONMENT_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_OUTPUTS
-extern SubTypeSyntax CF_OUTPUTS_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_FUNCTIONS
-extern const FnCallType CF_FNCALL_TYPES[];
-#endif
-
-#ifndef CF3_MOD_ACCESS
-extern SubTypeSyntax CF_REMACCESS_SUBTYPES[];
-
-extern const BodySyntax CF_REMACCESS_BODIES[];
-#endif
-
-#ifndef CF_MOD_INTERFACES
-extern SubTypeSyntax CF_INTERFACES_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_STORAGE
-extern SubTypeSyntax CF_STORAGE_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_DATABASES
-extern SubTypeSyntax CF_DATABASES_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_KNOWLEGDE
-extern SubTypeSyntax CF_KNOWLEDGE_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_PACKAGES
-extern SubTypeSyntax CF_PACKAGES_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_REPORT
-extern SubTypeSyntax CF_REPORT_SUBTYPES[];
-
-extern const BodySyntax CF_REPORT_BODIES[];
-#endif
-
-#ifndef CF3_MOD_FILES
-extern SubTypeSyntax CF_FILES_SUBTYPES[];
-
-extern const BodySyntax CF_COMMON_EDITBODIES[];
-#endif
-
-#ifndef CF3_MOD_EXEC
-extern SubTypeSyntax CF_EXEC_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_METHODS
-extern SubTypeSyntax CF_METHOD_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_PROCESS
-extern SubTypeSyntax CF_PROCESS_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_PROCESS
-extern SubTypeSyntax CF_MEASUREMENT_SUBTYPES[];
-#endif
-
-#ifndef CF3_MOD_SERVICES
-extern SubTypeSyntax CF_SERVICES_SUBTYPES[];
-#endif
-
 #include "dbm_api.h"
 #include "prototypes3.h"
+#include "alloc.h"
 #include "cf3.extern.h"
+
+extern const BodySyntax CF_COMMON_BODIES[];
+extern const BodySyntax CF_VARBODY[];
+extern const SubTypeSyntax *CF_ALL_SUBTYPES[];
+extern const BodySyntax CFG_CONTROLBODY[];
+extern const FnCallType CF_FNCALL_TYPES[];
+extern const SubTypeSyntax CF_ALL_BODIES[];
+extern const BodySyntax CFH_CONTROLBODY[];
+extern const SubTypeSyntax CF_COMMON_SUBTYPES[];
+extern const BodySyntax CF_CLASSBODY[];
+extern const BodySyntax CFA_CONTROLBODY[];
+extern const BodySyntax CFEX_CONTROLBODY[];
 
 #ifdef HAVE_NOVA
 # include <cf.nova.h>
 #endif
 
+
 #endif
+

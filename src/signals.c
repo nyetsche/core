@@ -23,14 +23,9 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: signals.c                                                           */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "cfstream.h"
 
 static const char *SIGNALS[] =
 {
@@ -59,10 +54,9 @@ void HandleSignals(int signum)
     CfOut(cf_error, "", "This sub-task started really at %s\n", cf_ctime(&CFINITSTARTTIME));
     fflush(stdout);
 
-    if (signum == SIGTERM || signum == SIGINT || signum == SIGHUP || signum == SIGSEGV || signum == SIGKILL
-        || signum == SIGPIPE)
+    if ((signum == SIGTERM) || (signum == SIGINT) || (signum == SIGHUP) || (signum == SIGSEGV) || (signum == SIGKILL)
+        || (signum == SIGPIPE))
     {
-        SelfTerminatePrelude();
         exit(0);
     }
     else if (signum == SIGUSR1)
@@ -76,20 +70,4 @@ void HandleSignals(int signum)
 
 /* Reset the signal handler */
     signal(signum, HandleSignals);
-}
-
-/*****************************************************************************/
-
-void SelfTerminatePrelude(void)
-{
-    CfLock best_guess;
-
-    CfOut(cf_verbose, "", "Trying to remove lock - try %s", CFLOCK);
-    best_guess.lock = xstrdup(CFLOCK);
-    best_guess.last = xstrdup(CFLAST);
-    best_guess.log = xstrdup(CFLOG);
-    YieldCurrentLock(best_guess);
-    unlink(PIDFILE);
-    EndAudit();
-    GenericDeInitialize();
 }

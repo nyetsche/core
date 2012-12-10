@@ -23,14 +23,9 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* Modestring toolkit                                                        */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "cfstream.h"
 
 /***************************************************************/
 
@@ -56,9 +51,8 @@ static int SetModeMask(char action, int value, int affected, mode_t *p, mode_t *
 
 /***************************************************************/
 
-int ParseModeString(char *modestring, mode_t *plusmask, mode_t *minusmask)
+int ParseModeString(const char *modestring, mode_t *plusmask, mode_t *minusmask)
 {
-    char *sp;
     int affected = 0, value = 0, gotaction, no_error = true;
     char action = '=';
     enum modestate state = wild;
@@ -76,7 +70,7 @@ int ParseModeString(char *modestring, mode_t *plusmask, mode_t *minusmask)
 
     gotaction = false;
 
-    for (sp = modestring; true; sp++)
+    for (const char *sp = modestring; true; sp++)
     {
         switch (*sp)
         {
@@ -174,7 +168,7 @@ int ParseModeString(char *modestring, mode_t *plusmask, mode_t *minusmask)
                 return false;
             }
 
-            while (isdigit((int) *sp) && (*sp != '\0'))
+            while ((isdigit((int) *sp)) && (*sp != '\0'))
             {
                 sp++;
             }
@@ -187,7 +181,7 @@ int ParseModeString(char *modestring, mode_t *plusmask, mode_t *minusmask)
                 return false;
             }
 
-            if (found_sort != unknown && found_sort != sort)
+            if ((found_sort != unknown) && (found_sort != sort))
             {
                 CfOut(cf_inform, "", "Symbolic and numeric form for modes mixed");
             }
@@ -202,9 +196,9 @@ int ParseModeString(char *modestring, mode_t *plusmask, mode_t *minusmask)
             break;
 
         case '\0':
-            if (state == who || value == 0)
+            if ((state == who) || (value == 0))
             {
-                if (strcmp(modestring, "0000") != 0 && strcmp(modestring, "000") != 0)
+                if ((strcmp(modestring, "0000") != 0) && (strcmp(modestring, "000") != 0))
                 {
                     CfOut(cf_error, "", "mode string is incomplete");
                     return false;
@@ -216,12 +210,12 @@ int ParseModeString(char *modestring, mode_t *plusmask, mode_t *minusmask)
                 return false;
             }
 
-            if (found_sort != unknown && found_sort != sort)
+            if ((found_sort != unknown) && (found_sort != sort))
             {
                 CfOut(cf_inform, "", "Symbolic and numeric form for modes mixed");
             }
 
-            CfDebug("[PLUS=%jo][MINUS=%jo]\n", (uintmax_t)*plusmask, (uintmax_t)*minusmask);
+            CfDebug("[PLUS=%" PRIoMAX "][MINUS=%" PRIoMAX "]\n", (uintmax_t)*plusmask, (uintmax_t)*minusmask);
             return true;
 
         default:

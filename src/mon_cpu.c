@@ -23,8 +23,9 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
 #include "monitoring.h"
+#include "cfstream.h"
 
 #if !defined(MINGW)
 
@@ -77,7 +78,7 @@ void MonCPUGatherData(double *cf_this)
         {
             if (sscanf(cpuname, "cpu%ld", &cpuidx) == 1)
             {
-                if (cpuidx < 0 || cpuidx >= MON_CPU_MAX)
+                if ((cpuidx < 0) || (cpuidx >= MON_CPU_MAX))
                 {
                     continue;
                 }
@@ -94,7 +95,7 @@ void MonCPUGatherData(double *cf_this)
 
         dq = (q - LAST_CPU_Q[cpuidx]) / (double) (total_time - LAST_CPU_T[cpuidx]);     /* % Utilization */
 
-        if (dq > 100 || dq < 0) // Counter wrap around
+        if ((dq > 100) || (dq < 0)) // Counter wrap around
         {
             dq = 50;
         }

@@ -23,23 +23,16 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: html.c                                                              */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 
-void CfHtmlHeader(FILE *fp, char *title, char *css, char *webdriver, char *header)
+void CfHtmlHeader(Writer *writer, char *title, char *css, char *webdriver, char *header)
 {
     if (title == NULL)
     {
         title = "Cfengine Knowledge";
     }
 
-    fprintf(fp, "<html>\n"
+    WriterWriteF(writer, "<html>\n"
             "  <head>\n"
             "    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=iso-8859-1\" />\n"
             "    <meta http-equiv=\"refresh\" CONTENT=\"150\">\n"
@@ -48,31 +41,31 @@ void CfHtmlHeader(FILE *fp, char *title, char *css, char *webdriver, char *heade
             "    <link rel=\"stylesheet\" href=\"hand_%s\" type=\"text/css\" media=\"handheld\" />\n"
             "  </head>\n" "  <body>\n", title, css, css);
 
-    if (header && strlen(header) > 0)
+    if (header && (strlen(header) > 0))
     {
         if (strlen(LICENSE_COMPANY) > 0)
         {
-            fprintf(fp, "<div id=\"company\">%s</div>\n%s\n", LICENSE_COMPANY, header);
+            WriterWriteF(writer, "<div id=\"company\">%s</div>\n%s\n", LICENSE_COMPANY, header);
         }
         else
         {
-            fprintf(fp, "%s\n", header);
+            WriterWriteF(writer, "%s\n", header);
         }
     }
 
-    fprintf(fp, "<div id=\"primary\">\n");
+    WriterWriteF(writer, "<div id=\"primary\">\n");
 }
 
 /*****************************************************************************/
 
-void CfHtmlFooter(FILE *fp, char *footer)
+void CfHtmlFooter(Writer *writer, char *footer)
 {
     if (strlen(footer) > 0)
     {
-        fprintf(fp, "%s", footer);
+        WriterWriteF(writer, "%s", footer);
     }
 
-    fprintf(fp, "</div></body></html>\n");
+    WriterWriteF(writer, "</div></body></html>\n");
 }
 
 /*****************************************************************************/

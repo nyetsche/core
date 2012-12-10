@@ -23,14 +23,9 @@
   included file COSL.txt.
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* BSD flags.c                                                               */
-/*                                                                           */
-/*****************************************************************************/
+/* BSD flags */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 
 typedef struct
 {
@@ -58,7 +53,7 @@ static const BSDFlag CF_BSDFLAGS[] =
     {"uimmutable", (u_long) UF_IMMUTABLE},
     {"uunlnk", (u_long) UF_NOUNLINK},
     {"uunlink", (u_long) UF_NOUNLINK},
-    {NULL, (u_long) NULL}
+    {NULL, (u_long) 0}
 };
 
 /***************************************************************/

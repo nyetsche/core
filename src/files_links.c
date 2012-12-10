@@ -23,21 +23,26 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: files_links.c                                                       */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 
+#include "promises.h"
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "files_operators.h"
+#include "transaction.h"
+#include "cfstream.h"
+
+#define CF_MAXLINKLEVEL 4
+
+#if !defined(__MINGW32__)
 static int MakeLink(char *from, char *to, Attributes attr, Promise *pp);
+#endif
 static char *AbsLinkPath(char *from, char *relto);
 
 /*****************************************************************************/
 
-char VerifyLink(char *destination, char *source, Attributes attr, Promise *pp)
+char VerifyLink(char *destination, char *source, Attributes attr, Promise *pp,
+                const ReportContext *report_context)
 #ifdef MINGW
 {
     CfOut(cf_verbose, "", "Windows does not support symbolic links (at VerifyLink())");
@@ -46,25 +51,13 @@ char VerifyLink(char *destination, char *source, Attributes attr, Promise *pp)
 #else                           /* NOT MINGW */
 {
     char to[CF_BUFSIZE], linkbuf[CF_BUFSIZE], absto[CF_BUFSIZE];
-    int nofile = false;
     struct stat sb;
 
     CfDebug("Linkfiles(%s -> %s)\n", destination, source);
 
-/*
-if (MatchRlistItem(attr.link.copy_patterns,lastnode))
-   {
-   CfOut(cf_verbose,"","cfengine: link item %s marked for copying instead\n",sourcefile);
-   LinkCopy(sourcefile,destfile,&ssb,attr,pp);
-   attr.copy_backup = true;
-   CopyFile(source,destination,ssb,attr,pp);
-   return;
-   }
-*/
-
     memset(to, 0, CF_BUFSIZE);
 
-    if (!IsAbsoluteFileName(source) && (*source != '.'))        /* links without a directory reference */
+    if ((!IsAbsoluteFileName(source)) && (*source != '.'))        /* links without a directory reference */
     {
         snprintf(to, CF_BUFSIZE - 1, "./%s", source);
     }
@@ -84,20 +77,22 @@ if (MatchRlistItem(attr.link.copy_patterns,lastnode))
         strcpy(absto, to);
     }
 
+    bool source_file_exists = true;
+
     if (cfstat(absto, &sb) == -1)
     {
         CfDebug("No source file\n");
-        nofile = true;
+        source_file_exists = false;
     }
 
-    if (nofile && (attr.link.when_no_file != cfa_force) && (attr.link.when_no_file != cfa_delete))
+    if ((!source_file_exists) && (attr.link.when_no_file != cfa_force) && (attr.link.when_no_file != cfa_delete))
     {
         CfOut(cf_inform, "", "Source %s for linking is absent", absto);
         cfPS(cf_verbose, CF_FAIL, "", pp, attr, " !! Unable to create link %s -> %s, no source", destination, to);
         return CF_WARN;
     }
 
-    if (nofile && attr.link.when_no_file == cfa_delete)
+    if ((!source_file_exists) && (attr.link.when_no_file == cfa_delete))
     {
         KillGhostLink(destination, attr, pp);
         return CF_CHG;
@@ -107,27 +102,29 @@ if (MatchRlistItem(attr.link.copy_patterns,lastnode))
 
     if (readlink(destination, linkbuf, CF_BUFSIZE - 1) == -1)
     {
-        if (!MakeParentDirectory(destination, attr.move_obstructions))  /* link doesn't exist */
+
+        if (!MakeParentDirectory2(destination, attr.move_obstructions, report_context, EnforcePromise(attr.transaction.action)))
         {
-            cfPS(cf_verbose, CF_FAIL, "", pp, attr, " !! Unable to create link %s -> %s", destination, to);
+            cfPS(cf_error, CF_FAIL, "", pp, attr, " !! Unable to create parent directory of link %s -> %s (enforce=%d)",
+                 destination, to, EnforcePromise(attr.transaction.action));
             return CF_FAIL;
         }
         else
         {
-            if (!MoveObstruction(destination, attr, pp))
+            if (!MoveObstruction(destination, attr, pp, report_context))
             {
                 cfPS(cf_verbose, CF_FAIL, "", pp, attr, " !! Unable to create link %s -> %s", destination, to);
                 return CF_FAIL;
             }
 
-            return MakeLink(destination, to, attr, pp) ? CF_CHG : CF_FAIL;
+            return MakeLink(destination, source, attr, pp) ? CF_CHG : CF_FAIL;
         }
     }
     else
     {
         int ok = false;
 
-        if (attr.link.link_type == cfa_symlink && strcmp(linkbuf, to) != 0 && strcmp(linkbuf, source) != 0)
+        if ((attr.link.link_type == cfa_symlink) && (strcmp(linkbuf, to) != 0) && (strcmp(linkbuf, source) != 0))
         {
             ok = true;
         }
@@ -151,7 +148,7 @@ if (MatchRlistItem(attr.link.copy_patterns,lastnode))
                         return CF_FAIL;
                     }
 
-                    return MakeLink(destination, to, attr, pp);
+                    return MakeLink(destination, source, attr, pp);
                 }
                 else
                 {
@@ -168,7 +165,7 @@ if (MatchRlistItem(attr.link.copy_patterns,lastnode))
         }
         else
         {
-            cfPS(cf_verbose, CF_NOP, "", pp, attr, " -> Link %s points to %s - promise kept", destination, to);
+            cfPS(cf_verbose, CF_NOP, "", pp, attr, " -> Link %s points to %s - promise kept", destination, source);
             return CF_NOP;
         }
     }
@@ -177,7 +174,8 @@ if (MatchRlistItem(attr.link.copy_patterns,lastnode))
 
 /*****************************************************************************/
 
-char VerifyAbsoluteLink(char *destination, char *source, Attributes attr, Promise *pp)
+char VerifyAbsoluteLink(char *destination, char *source, Attributes attr, Promise *pp,
+                        const ReportContext *report_context)
 {
     char absto[CF_BUFSIZE];
     char expand[CF_BUFSIZE];
@@ -221,12 +219,13 @@ char VerifyAbsoluteLink(char *destination, char *source, Attributes attr, Promis
 
     CompressPath(linkto, expand);
 
-    return VerifyLink(destination, linkto, attr, pp);
+    return VerifyLink(destination, linkto, attr, pp, report_context);
 }
 
 /*****************************************************************************/
 
-char VerifyRelativeLink(char *destination, char *source, Attributes attr, Promise *pp)
+char VerifyRelativeLink(char *destination, char *source, Attributes attr, Promise *pp,
+                        const ReportContext *report_context)
 {
     char *sp, *commonto, *commonfrom;
     char buff[CF_BUFSIZE], linkto[CF_BUFSIZE], add[CF_BUFSIZE];
@@ -236,7 +235,7 @@ char VerifyRelativeLink(char *destination, char *source, Attributes attr, Promis
 
     if (*source == '.')
     {
-        return VerifyLink(destination, source, attr, pp);
+        return VerifyLink(destination, source, attr, pp, report_context);
     }
 
     if (!CompressPath(linkto, source))
@@ -261,7 +260,7 @@ char VerifyRelativeLink(char *destination, char *source, Attributes attr, Promis
         commonfrom++;
     }
 
-    while (!(IsAbsoluteFileName(commonto) && IsAbsoluteFileName(commonfrom)))
+    while (!((IsAbsoluteFileName(commonto)) && (IsAbsoluteFileName(commonfrom))))
     {
         commonto--;
         commonfrom--;
@@ -297,19 +296,20 @@ char VerifyRelativeLink(char *destination, char *source, Attributes attr, Promis
         return CF_FAIL;
     }
 
-    return VerifyLink(destination, buff, attr, pp);
+    return VerifyLink(destination, buff, attr, pp, report_context);
 }
 
 /*****************************************************************************/
 
-char VerifyHardLink(char *destination, char *source, Attributes attr, Promise *pp)
+char VerifyHardLink(char *destination, char *source, Attributes attr, Promise *pp,
+                    const ReportContext *report_context)
 {
     char to[CF_BUFSIZE], absto[CF_BUFSIZE];
     struct stat ssb, dsb;
 
     memset(to, 0, CF_BUFSIZE);
 
-    if (!IsAbsoluteFileName(source) && (*source != '.'))        /* links without a directory reference */
+    if ((!IsAbsoluteFileName(source)) && (*source != '.'))        /* links without a directory reference */
     {
         snprintf(to, CF_BUFSIZE - 1, ".%c%s", FILE_SEPARATOR, source);
     }
@@ -353,12 +353,12 @@ char VerifyHardLink(char *destination, char *source, Attributes attr, Promise *p
     /* the files could be on different devices, but unix doesn't */
     /* allow this behaviour so the tests below are theoretical... */
 
-    if (dsb.st_ino != ssb.st_ino && dsb.st_dev != ssb.st_dev)
+    if ((dsb.st_ino != ssb.st_ino) && (dsb.st_dev != ssb.st_dev))
     {
         CfOut(cf_verbose, "", " !! If this is POSIX, unable to determine if %s is hard link is correct\n", destination);
         CfOut(cf_verbose, "", " !! since it points to a different filesystem!\n");
 
-        if (dsb.st_mode == ssb.st_mode && dsb.st_size == ssb.st_size)
+        if ((dsb.st_mode == ssb.st_mode) && (dsb.st_size == ssb.st_size))
         {
             cfPS(cf_verbose, CF_NOP, "", pp, attr, "Hard link (%s->%s) on different device APPEARS okay\n", destination,
                  to);
@@ -366,7 +366,7 @@ char VerifyHardLink(char *destination, char *source, Attributes attr, Promise *p
         }
     }
 
-    if (dsb.st_ino == ssb.st_ino && dsb.st_dev == ssb.st_dev)
+    if ((dsb.st_ino == ssb.st_ino) && (dsb.st_dev == ssb.st_dev))
     {
         cfPS(cf_verbose, CF_NOP, "", pp, attr, " -> Hard link (%s->%s) exists and is okay\n", destination, to);
         return CF_NOP;
@@ -374,7 +374,7 @@ char VerifyHardLink(char *destination, char *source, Attributes attr, Promise *p
 
     CfOut(cf_inform, "", " !! %s does not appear to be a hard link to %s\n", destination, to);
 
-    if (!MoveObstruction(destination, attr, pp))
+    if (!MoveObstruction(destination, attr, pp, report_context))
     {
         return CF_FAIL;
     }
@@ -425,7 +425,7 @@ int KillGhostLink(char *name, Attributes attr, Promise *pp)
 
     if (cfstat(tmp, &statbuf) == -1)    /* link points nowhere */
     {
-        if (attr.link.when_no_file == cfa_delete || attr.recursion.rmdeadlinks)
+        if ((attr.link.when_no_file == cfa_delete) || (attr.recursion.rmdeadlinks))
         {
             CfOut(cf_verbose, "", " !! %s is a link which points to %s, but that file doesn't seem to exist\n", name,
                   linkbuf);
@@ -446,16 +446,10 @@ int KillGhostLink(char *name, Attributes attr, Promise *pp)
 
 /*****************************************************************************/
 
+#if !defined(__MINGW32__)
 static int MakeLink(char *from, char *to, Attributes attr, Promise *pp)
-#ifdef MINGW                    // TODO: Remove? Should never get called.
 {
-    CfOut(cf_verbose, "", "Windows does not support symbolic links");
-    cfPS(cf_error, CF_FAIL, "symlink", pp, attr, " !! Couldn't link %s to %s\n", to, from);
-    return false;
-}
-#else                           /* NOT MINGW */
-{
-    if (DONTDO || attr.transaction.action == cfa_warn)
+    if (DONTDO || (attr.transaction.action == cfa_warn))
     {
         CfOut(cf_error, "", " !! Need to link files %s -> %s\n", from, to);
         return false;
@@ -606,7 +600,7 @@ int ExpandLinks(char *dest, char *from, int level)      /* recursive */
                         return true;
                     }
 
-                    if (!lastnode && !ExpandLinks(buff, dest, level + 1))
+                    if ((!lastnode) && (!ExpandLinks(buff, dest, level + 1)))
                     {
                         return false;
                     }
@@ -626,7 +620,7 @@ int ExpandLinks(char *dest, char *from, int level)      /* recursive */
 
                     memset(buff, 0, CF_BUFSIZE);
 
-                    if (!lastnode && !ExpandLinks(buff, dest, level + 1))
+                    if ((!lastnode) && (!ExpandLinks(buff, dest, level + 1)))
                     {
                         return false;
                     }

@@ -22,25 +22,33 @@
   included file COSL.txt.
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: env_monitor.c                                                       */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "env_context.h"
 #include "monitoring.h"
 #include "granules.h"
+#include "dbm_api.h"
+#include "policy.h"
+#include "promises.h"
+#include "item_lib.h"
+#include "conversion.h"
+#include "reporting.h"
+#include "expand.h"
+#include "scope.h"
+#include "sysinfo.h"
+#include "files_operators.h"
+#include "cfstream.h"
 
 #include <math.h>
-#include "dbm_api.h"
 
 /*****************************************************************************/
 /* Globals                                                                   */
 /*****************************************************************************/
 
 #define CF_ENVNEW_FILE   "env_data.new"
+#define cf_noise_threshold 6    /* number that does not warrent large anomaly status */
+#define MON_THRESHOLD_HIGH 1000000      // samples should stay below this threshold
+#define LDT_BUFSIZE 10
 
 static char ENVFILE_NEW[CF_BUFSIZE];
 static char ENVFILE[CF_BUFSIZE];
@@ -77,10 +85,10 @@ int NO_FORK = false;
 
 static void GetDatabaseAge(void);
 static void LoadHistogram(void);
-static void GetQ(void);
+static void GetQ(const Policy *policy, const ReportContext *report_context);
 static Averages EvalAvQ(char *timekey);
 static void ArmClasses(Averages newvals, char *timekey);
-static void GatherPromisedMeasures(void);
+static void GatherPromisedMeasures(const Policy *policy, const ReportContext *report_context);
 
 static void LeapDetection(void);
 static Averages *GetCurrentAverages(char *timekey);
@@ -231,7 +239,7 @@ static void LoadHistogram(void)
 
 /*********************************************************************/
 
-void MonitorStartServer(int argc, char **argv)
+void MonitorStartServer(const Policy *policy, const ReportContext *report_context)
 {
     char timekey[CF_SMALLBUF];
     Averages averages;
@@ -251,7 +259,7 @@ void MonitorStartServer(int argc, char **argv)
     if ((!NO_FORK) && (fork() != 0))
     {
         CfOut(cf_inform, "", "cf-monitord: starting\n");
-        exit(0);
+        _exit(0);
     }
 
     if (!NO_FORK)
@@ -278,7 +286,7 @@ void MonitorStartServer(int argc, char **argv)
 
     while (true)
     {
-        GetQ();
+        GetQ(policy, report_context);
         snprintf(timekey, sizeof(timekey), "%s", GenTimeKey(time(NULL)));
         averages = EvalAvQ(timekey);
         LeapDetection();
@@ -294,7 +302,7 @@ void MonitorStartServer(int argc, char **argv)
 
 /*********************************************************************/
 
-static void GetQ(void)
+static void GetQ(const Policy *policy, const ReportContext *report_context)
 {
     CfDebug("========================= GET Q ==============================\n");
 
@@ -312,21 +320,23 @@ static void GetQ(void)
     MonTempGatherData(CF_THIS);
 #endif /* NOT MINGW */
     MonOtherGatherData(CF_THIS);
-    GatherPromisedMeasures();
+    GatherPromisedMeasures(policy, report_context);
 }
 
 /*********************************************************************/
 
 static Averages EvalAvQ(char *t)
 {
-    Averages *currentvals, newvals;
+    Averages *lastweek_vals, newvals;
+    double last5_vals[CF_OBSERVABLES];
     double This[CF_OBSERVABLES];
     char name[CF_MAXVARSIZE];
+    time_t now = time(NULL);
     int i;
 
     Banner("Evaluating and storing new weekly averages");
 
-    if ((currentvals = GetCurrentAverages(t)) == NULL)
+    if ((lastweek_vals = GetCurrentAverages(t)) == NULL)
     {
         CfOut(cf_error, "", "Error reading average database");
         exit(1);
@@ -344,43 +354,59 @@ static Averages EvalAvQ(char *t)
 
         /* Overflow protection */
 
-        if (currentvals->Q[i].expect < 0)
+        if (lastweek_vals->Q[i].expect < 0)
         {
-            currentvals->Q[i].expect = 0;
+            lastweek_vals->Q[i].expect = 0;
         }
 
-        if (currentvals->Q[i].q < 0)
+        if (lastweek_vals->Q[i].q < 0)
         {
-            currentvals->Q[i].q = 0;
+            lastweek_vals->Q[i].q = 0;
         }
 
-        if (currentvals->Q[i].var < 0)
+        if (lastweek_vals->Q[i].var < 0)
         {
-            currentvals->Q[i].var = 0;
+            lastweek_vals->Q[i].var = 0;
         }
 
+        // lastweek_vals is last week's stored data
+        
         This[i] =
-            RejectAnomaly(CF_THIS[i], currentvals->Q[i].expect, currentvals->Q[i].var, LOCALAV.Q[i].expect,
+            RejectAnomaly(CF_THIS[i], lastweek_vals->Q[i].expect, lastweek_vals->Q[i].var, LOCALAV.Q[i].expect,
                           LOCALAV.Q[i].var);
 
         newvals.Q[i].q = This[i];
+        newvals.last_seen = now;  // Record the freshness of this slot
+        
         LOCALAV.Q[i].q = This[i];
 
-        CfDebug("Current %s.q %lf\n", name, currentvals->Q[i].q);
-        CfDebug("Current %s.var %lf\n", name, currentvals->Q[i].var);
-        CfDebug("Current %s.ex %lf\n", name, currentvals->Q[i].expect);
-        CfDebug("CF_THIS[%s] = %lf\n", name, CF_THIS[i]);
-        CfDebug("This[%s] = %lf\n", name, This[i]);
+        CfDebug("Previous week's %s.q %lf\n", name, lastweek_vals->Q[i].q);
+        CfDebug("Previous week's %s.var %lf\n", name, lastweek_vals->Q[i].var);
+        CfDebug("Previous week's %s.ex %lf\n", name, lastweek_vals->Q[i].expect);
 
-        newvals.Q[i].expect = WAverage(This[i], currentvals->Q[i].expect, WAGE);
+        CfDebug("Just measured: CF_THIS[%s] = %lf\n", name, CF_THIS[i]);
+        CfDebug("Just sanitized: This[%s] = %lf\n", name, This[i]);
+
+        newvals.Q[i].expect = WAverage(This[i], lastweek_vals->Q[i].expect, WAGE);
         LOCALAV.Q[i].expect = WAverage(newvals.Q[i].expect, LOCALAV.Q[i].expect, ITER);
 
-        newvals.Q[i].dq = newvals.Q[i].q - currentvals->Q[i].q;
-        LOCALAV.Q[i].dq = newvals.Q[i].q - currentvals->Q[i].q;
+        if (last5_vals[i] > 0)
+        {
+            newvals.Q[i].dq = newvals.Q[i].q - last5_vals[i];
+            LOCALAV.Q[i].dq = newvals.Q[i].q - last5_vals[i];
+        }
+        else
+        {
+            newvals.Q[i].dq = 0;
+            LOCALAV.Q[i].dq = 0;           
+        }
 
-        delta2 = (This[i] - currentvals->Q[i].expect) * (This[i] - currentvals->Q[i].expect);
+        // Save the last measured value as the value "from five minutes ago" to get the gradient
+        last5_vals[i] = newvals.Q[i].q;
 
-        if (currentvals->Q[i].var > delta2 * 2.0)
+        delta2 = (This[i] - lastweek_vals->Q[i].expect) * (This[i] - lastweek_vals->Q[i].expect);
+
+        if (lastweek_vals->Q[i].var > delta2 * 2.0)
         {
             /* Clean up past anomalies */
             newvals.Q[i].var = delta2;
@@ -388,7 +414,7 @@ static Averages EvalAvQ(char *t)
         }
         else
         {
-            newvals.Q[i].var = WAverage(delta2, currentvals->Q[i].var, WAGE);
+            newvals.Q[i].var = WAverage(delta2, lastweek_vals->Q[i].var, WAGE);
             LOCALAV.Q[i].var = WAverage(newvals.Q[i].var, LOCALAV.Q[i].var, ITER);
         }
 
@@ -405,7 +431,7 @@ static Averages EvalAvQ(char *t)
     }
 
     UpdateAverages(t, newvals);
-    UpdateDistributions(t, currentvals);        /* Distribution about mean */
+    UpdateDistributions(t, lastweek_vals);        /* Distribution about mean */
 
     return newvals;
 }
@@ -433,7 +459,7 @@ static void LeapDetection(void)
     {
         /* First do some anomaly rejection. Sudden jumps must be numerical errors. */
 
-        if (LDT_BUF[i][last_pos] > 0 && CF_THIS[i] / LDT_BUF[i][last_pos] > 1000)
+        if ((LDT_BUF[i][last_pos] > 0) && ((CF_THIS[i] / LDT_BUF[i][last_pos]) > 1000))
         {
             CF_THIS[i] = LDT_BUF[i][last_pos];
         }
@@ -508,6 +534,8 @@ static void PublishEnvironment(Item *classes)
     cf_rename(ENVFILE_NEW, ENVFILE);
 }
 
+/*********************************************************************/
+
 static void ArmClasses(Averages av, char *timekey)
 {
     double sigma;
@@ -516,7 +544,7 @@ static void ArmClasses(Averages av, char *timekey)
     char buff[CF_BUFSIZE], ldt_buff[CF_BUFSIZE], name[CF_MAXVARSIZE];
     static int anomaly[CF_OBSERVABLES][LDT_BUFSIZE];
     extern Item *ALL_INCOMING;
-    extern Item *MON_TCP4, *MON_TCP6;
+    extern Item *MON_UDP4, *MON_UDP6, *MON_TCP4, *MON_TCP6;
 
     CfDebug("Arm classes for %s\n", timekey);
 
@@ -525,9 +553,7 @@ static void ArmClasses(Averages av, char *timekey)
         char desc[CF_BUFSIZE];
 
         GetObservable(i, name, desc);
-        sigma =
-            SetClasses(name, CF_THIS[i], av.Q[i].expect, av.Q[i].var, LOCALAV.Q[i].expect, LOCALAV.Q[i].var, &classlist,
-                       timekey);
+        sigma = SetClasses(name, CF_THIS[i], av.Q[i].expect, av.Q[i].var, LOCALAV.Q[i].expect, LOCALAV.Q[i].var, &classlist, timekey);
         SetVariable(name, CF_THIS[i], av.Q[i].expect, sigma, &classlist);
 
         /* LDT */
@@ -578,7 +604,7 @@ static void ArmClasses(Averages av, char *timekey)
             }
 
             AppendItem(&classlist, buff, "2");
-            NewPersistentContext(buff, CF_PERSISTENCE, cfpreserve);
+            NewPersistentContext(buff, "measurements", CF_PERSISTENCE, cfpreserve);
         }
         else
         {
@@ -616,6 +642,24 @@ static void ArmClasses(Averages av, char *timekey)
     }
 
     ldt_buff[0] = '\0';
+    PrintItemList(ldt_buff,CF_BUFSIZE,MON_UDP6);
+
+    if (strlen(ldt_buff) < 1500)
+    {
+        snprintf(buff,CF_BUFSIZE,"@listening_udp6_ports=%s",ldt_buff);
+        AppendItem(&classlist,buff,NULL);
+    }
+
+    ldt_buff[0] = '\0';
+    PrintItemList(ldt_buff,CF_BUFSIZE,MON_UDP4);
+
+    if (strlen(ldt_buff) < 1500)
+    {
+        snprintf(buff,CF_BUFSIZE,"@listening_udp4_ports=%s",ldt_buff);
+        AppendItem(&classlist,buff,NULL);
+    }
+
+    ldt_buff[0] = '\0';
     PrintItemList(ldt_buff,CF_BUFSIZE,MON_TCP6);
 
     if (strlen(ldt_buff) < 1500)
@@ -635,19 +679,40 @@ static void ArmClasses(Averages av, char *timekey)
 
     // Port addresses
 
-    for (ip = MON_TCP6; ip != NULL; ip=ip->next)
+    if (ListLen(MON_TCP6) + ListLen(MON_TCP4) > 512)
     {
-        snprintf(buff,CF_BUFSIZE,"tcp6_port_addr[%s]=%s",ip->name,ip->classes);
-        AppendItem(&classlist,buff,NULL);       
+        CfOut(cf_inform, "", "Disabling address information of TCP ports in LISTEN state: more than 512 listening ports are detected");
+    }
+    else
+    {
+        for (ip = MON_TCP6; ip != NULL; ip=ip->next)
+        {
+            snprintf(buff,CF_BUFSIZE,"tcp6_port_addr[%s]=%s",ip->name,ip->classes);
+            AppendItem(&classlist,buff,NULL);       
+        }
+
+        for (ip = MON_TCP4; ip != NULL; ip=ip->next)
+        {
+            snprintf(buff,CF_BUFSIZE,"tcp4_port_addr[%s]=%s",ip->name,ip->classes);
+            AppendItem(&classlist,buff,NULL);       
+        }
     }
 
-    for (ip = MON_TCP4; ip != NULL; ip=ip->next)
+    for (ip = MON_UDP6; ip != NULL; ip=ip->next)
     {
-        snprintf(buff,CF_BUFSIZE,"tcp4_port_addr[%s]=%s",ip->name,ip->classes);
+        snprintf(buff,CF_BUFSIZE,"udp6_port_addr[%s]=%s",ip->name,ip->classes);
         AppendItem(&classlist,buff,NULL);       
     }
-
+    
+    for (ip = MON_UDP4; ip != NULL; ip=ip->next)
+    {
+        snprintf(buff,CF_BUFSIZE,"udp4_port_addr[%s]=%s",ip->name,ip->classes);
+        AppendItem(&classlist,buff,NULL);       
+    }
+    
     PublishEnvironment(classlist);
+
+    DeleteItemList(classlist);
 }
 
 /*****************************************************************************/
@@ -718,7 +783,7 @@ static void UpdateDistributions(char *timekey, Averages *av)
    std-deviation for the current time.
 */
 
-    if (IsDefinedClass("Min40_45"))
+    if (IsDefinedClass("Min40_45", NULL))
     {
         day = Day2Number(timekey);
 
@@ -727,7 +792,7 @@ static void UpdateDistributions(char *timekey, Averages *av)
             position =
                 CF_GRAINS / 2 + (int) (0.5 + (CF_THIS[i] - av->Q[i].expect) * CF_GRAINS / (4 * sqrt((av->Q[i].var))));
 
-            if (0 <= position && position < CF_GRAINS)
+            if ((0 <= position) && (position < CF_GRAINS))
             {
                 HISTOGRAM[i][day][position]++;
             }
@@ -772,7 +837,7 @@ static double WAverage(double anew, double aold, double age)
 
 /* First do some database corruption self-healing */
 
-    if (aold > cf_sane_monitor_limit && anew > cf_sane_monitor_limit)
+    if ((aold > cf_sane_monitor_limit) && (anew > cf_sane_monitor_limit))
     {
         return 0;
     }
@@ -789,7 +854,7 @@ static double WAverage(double anew, double aold, double age)
 
 /* Now look at the self-learning */
 
-    if (FORGETRATE > 0.9 || FORGETRATE < 0.1)
+    if ((FORGETRATE > 0.9) || (FORGETRATE < 0.1))
     {
         FORGETRATE = 0.6;
     }
@@ -805,7 +870,7 @@ static double WAverage(double anew, double aold, double age)
         wold = FORGETRATE;
     }
 
-    if (aold == 0 && anew == 0)
+    if ((aold == 0) && (anew == 0))
     {
         return 0;
     }
@@ -847,7 +912,7 @@ static double SetClasses(char *name, double variable, double av_expect, double a
 
     CfDebug(" delta = %lf,sigma = %lf, lsigma = %lf, sig = %lf\n", delta, sigma, lsigma, sig);
 
-    if (sigma == 0.0 || lsigma == 0.0)
+    if ((sigma == 0.0) || (lsigma == 0.0))
     {
         CfDebug(" No sigma variation .. can't measure class\n");
 
@@ -888,7 +953,7 @@ static double SetClasses(char *name, double variable, double av_expect, double a
             strcpy(buffer2, buffer);
             strcat(buffer2, "_microanomaly");
             AppendItem(classlist, buffer2, "2");
-            NewPersistentContext(buffer2, CF_PERSISTENCE, cfpreserve);
+            NewPersistentContext(buffer2, "measurements", CF_PERSISTENCE, cfpreserve);
         }
 
         return sig;             /* Granularity makes this silly */
@@ -935,7 +1000,7 @@ static double SetClasses(char *name, double variable, double av_expect, double a
             strcpy(buffer2, buffer);
             strcat(buffer2, "_dev2");
             AppendItem(classlist, buffer2, "2");
-            NewPersistentContext(buffer2, CF_PERSISTENCE, cfpreserve);
+            NewPersistentContext(buffer2, "measurements", CF_PERSISTENCE, cfpreserve);
         }
 
         if (dev > 3.0 * sqrt(2.0))
@@ -943,7 +1008,7 @@ static double SetClasses(char *name, double variable, double av_expect, double a
             strcpy(buffer2, buffer);
             strcat(buffer2, "_anomaly");
             AppendItem(classlist, buffer2, "3");
-            NewPersistentContext(buffer2, CF_PERSISTENCE, cfpreserve);
+            NewPersistentContext(buffer2, "measurements", CF_PERSISTENCE, cfpreserve);
         }
 
         return sig;
@@ -956,7 +1021,7 @@ static void SetVariable(char *name, double value, double average, double stddev,
 {
     char var[CF_BUFSIZE];
 
-    snprintf(var, CF_MAXVARSIZE, "value_%s=%.0lf", name, value);
+    snprintf(var, CF_MAXVARSIZE, "value_%s=%.2lf", name, value);
     AppendItem(classlist, var, "");
 
     snprintf(var, CF_MAXVARSIZE, "av_%s=%.2lf", name, average);
@@ -1046,31 +1111,40 @@ static double RejectAnomaly(double new, double average, double variance, double 
 /* Level 5                                                     */
 /***************************************************************/
 
-static void GatherPromisedMeasures(void)
+static void GatherPromisedMeasures(const Policy *policy, const ReportContext *report_context)
 {
-    Bundle *bp;
     SubType *sp;
     Promise *pp;
     char *scope;
 
-    for (bp = BUNDLES; bp != NULL; bp = bp->next)       /* get schedule */
+    for (const Bundle *bp = policy->bundles; bp != NULL; bp = bp->next)       /* get schedule */
     {
         scope = bp->name;
         SetNewScope(bp->name);
 
-        if ((strcmp(bp->type, CF_AGENTTYPES[cf_monitor]) == 0) || (strcmp(bp->type, CF_AGENTTYPES[cf_common]) == 0))
+        if ((strcmp(bp->type, CF_AGENTTYPES[AGENT_TYPE_MONITOR]) == 0) || (strcmp(bp->type, CF_AGENTTYPES[AGENT_TYPE_COMMON]) == 0))
         {
             for (sp = bp->subtypes; sp != NULL; sp = sp->next)  /* get schedule */
             {
                 for (pp = sp->promiselist; pp != NULL; pp = pp->next)
                 {
-                    ExpandPromise(cf_monitor, scope, pp, KeepMonitorPromise);
+                    ExpandPromise(AGENT_TYPE_MONITOR, scope, pp, KeepMonitorPromise, report_context);
                 }
             }
         }
     }
 
     DeleteAllScope();
+    NewScope("const");
+    NewScope("control_monitor");
+    NewScope("control_common");
+    NewScope("mon");
+    NewScope("sys");
+    GetNameInfo3();
+    GetInterfacesInfo(AGENT_TYPE_MONITOR);
+    Get3Environment();
+    OSClasses();
+    BuiltinClasses();
 }
 
 /*********************************************************************/
@@ -1081,7 +1155,7 @@ static void KeepMonitorPromise(Promise *pp)
 {
     char *sp = NULL;
 
-    if (!IsDefinedClass(pp->classes))
+    if (!IsDefinedClass(pp->classes, pp->namespace))
     {
         CfOut(cf_verbose, "", "\n");
         CfOut(cf_verbose, "", ". . . . . . . . . . . . . . . . . . . . . . . . . . . . \n");

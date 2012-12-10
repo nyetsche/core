@@ -29,17 +29,33 @@
 /*                                                                   */
 /*********************************************************************/
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "expand.h"
 
-static void MapIteratorsFromScalar(const char *scope, Rlist **los, Rlist **lol, char *string, int level, Promise *pp);
-static int Epimenides(char *var, Rval rval, int level);
+#include "env_context.h"
+#include "constraints.h"
+#include "promises.h"
+#include "vars.h"
+#include "syntax.h"
+#include "files_names.h"
+#include "conversion.h"
+#include "reporting.h"
+#include "scope.h"
+#include "matching.h"
+#include "unix.h"
+#include "attributes.h"
+#include "cfstream.h"
+#include "fncall.h"
+#include "args.h"
+
+static void MapIteratorsFromScalar(const char *scope, Rlist **los, Rlist **lol, char *string, int level, const Promise *pp);
+static int Epimenides(const char *var, Rval rval, int level);
 static void RewriteInnerVarStringAsLocalCopyName(char *string);
 static int CompareRlist(Rlist *list1, Rlist *list2);
 static int CompareRval(Rval rval1, Rval rval2);
 static void SetAnyMissingDefaults(Promise *pp);
-static void CopyLocalizedIteratorsToThisScope(char *scope, Rlist *listvars);
-
+static void CopyLocalizedIteratorsToThisScope(const char *scope, const Rlist *listvars);
+static void CheckRecursion(const ReportContext *report_context, Promise *pp);
+static void ParseServices(const ReportContext *report_context, Promise *pp);
 /*
 
 Expanding variables is easy -- expanding lists automagically requires
@@ -98,7 +114,8 @@ since these cannot be mapped into "this" without some magic.
    
 **********************************************************************/
 
-void ExpandPromise(enum cfagenttype agent, char *scopeid, Promise *pp, void *fnptr)
+void ExpandPromise(AgentType agent, const char *scopeid, Promise *pp, void *fnptr,
+                   const ReportContext *report_context)
 {
     Rlist *listvars = NULL, *scalarvars = NULL;
     Constraint *cp;
@@ -135,7 +152,7 @@ void ExpandPromise(enum cfagenttype agent, char *scopeid, Promise *pp, void *fnp
     CopyLocalizedIteratorsToThisScope(scopeid, listvars);
 
     PushThisScope();
-    ExpandPromiseAndDo(agent, scopeid, pcopy, scalarvars, listvars, fnptr);
+    ExpandPromiseAndDo(agent, scopeid, pcopy, scalarvars, listvars, fnptr, report_context);
     PopThisScope();
 
     DeletePromise(pcopy);
@@ -145,7 +162,7 @@ void ExpandPromise(enum cfagenttype agent, char *scopeid, Promise *pp, void *fnp
 
 /*********************************************************************/
 
-Rval ExpandDanglers(char *scopeid, Rval rval, Promise *pp)
+Rval ExpandDanglers(const char *scopeid, Rval rval, const Promise *pp)
 {
     Rval final;
 
@@ -175,7 +192,8 @@ Rval ExpandDanglers(char *scopeid, Rval rval, Promise *pp)
 
 /*********************************************************************/
 
-void MapIteratorsFromRval(const char *scopeid, Rlist **scalarvars, Rlist **listvars, Rval rval, Promise *pp)
+void MapIteratorsFromRval(const char *scopeid, Rlist **scalarvars, Rlist **listvars, Rval rval,
+                          const Promise *pp)
 {
     Rlist *rp;
     FnCall *fp;
@@ -216,7 +234,8 @@ void MapIteratorsFromRval(const char *scopeid, Rlist **scalarvars, Rlist **listv
 
 /*********************************************************************/
 
-static void MapIteratorsFromScalar(const char *scopeid, Rlist **scal, Rlist **its, char *string, int level, Promise *pp)
+static void MapIteratorsFromScalar(const char *scopeid, Rlist **scal, Rlist **its, char *string, int level,
+                                   const Promise *pp)
 {
     char *sp;
     Rval rval;
@@ -325,13 +344,12 @@ static void MapIteratorsFromScalar(const char *scopeid, Rlist **scal, Rlist **it
 
 int ExpandScalar(const char *string, char buffer[CF_EXPANDSIZE])
 {
-    CfDebug("ExpandScalar(context=%s,id=%s)\n", CONTEXTID, string);
     return ExpandPrivateScalar(CONTEXTID, string, buffer);
 }
 
 /*********************************************************************/
 
-Rlist *ExpandList(char *scopeid, Rlist *list, int expandnaked)
+Rlist *ExpandList(const char *scopeid, const Rlist *list, int expandnaked)
 {
     Rlist *rp, *start = NULL;
     Rval returnval;
@@ -371,7 +389,7 @@ Rlist *ExpandList(char *scopeid, Rlist *list, int expandnaked)
 
 /*********************************************************************/
 
-Rval ExpandPrivateRval(char *scopeid, Rval rval)
+Rval ExpandPrivateRval(const char *scopeid, Rval rval)
 {
     char buffer[CF_EXPANDSIZE];
     FnCall *fp, *fpe;
@@ -414,7 +432,7 @@ Rval ExpandPrivateRval(char *scopeid, Rval rval)
 
 /*********************************************************************/
 
-Rval ExpandBundleReference(char *scopeid, Rval rval)
+Rval ExpandBundleReference(const char *scopeid, Rval rval)
 {
     CfDebug("ExpandBundleReference(scope=%s,type=%c)\n", scopeid, rval.rtype);
 
@@ -445,7 +463,7 @@ Rval ExpandBundleReference(char *scopeid, Rval rval)
 
 /*********************************************************************/
 
-static int ExpandOverflow(char *str1, char *str2)
+static bool ExpandOverflow(const char *str1, const char *str2)
 {
     int len = strlen(str2);
 
@@ -618,8 +636,8 @@ int ExpandPrivateScalar(const char *scopeid, const char *string, char buffer[CF_
 
 /*********************************************************************/
 
-void ExpandPromiseAndDo(enum cfagenttype agent, char *scopeid, Promise *pp, Rlist *scalarvars, Rlist *listvars,
-                        void (*fnptr) ())
+void ExpandPromiseAndDo(AgentType agent, const char *scopeid, Promise *pp, Rlist *scalarvars, Rlist *listvars,
+                        void (*fnptr) (), const ReportContext *report_context)
 {
     Rlist *lol = NULL;
     Promise *pexp;
@@ -664,7 +682,11 @@ void ExpandPromiseAndDo(enum cfagenttype agent, char *scopeid, Promise *pp, Rlis
 
         if (handle)
         {
-            NewScalar("this", "handle", handle, cf_str);
+            char tmp[CF_EXPANDSIZE];
+            // This ordering is necessary to get automated canonification
+            ExpandScalar(handle,tmp);
+            CanonifyNameInPlace(tmp);
+            NewScalar("this", "handle", tmp, cf_str);
         }
         else
         {
@@ -683,6 +705,9 @@ void ExpandPromiseAndDo(enum cfagenttype agent, char *scopeid, Promise *pp, Rlis
         snprintf(v, CF_MAXVARSIZE, "%d", (int) getgid());
         NewScalar("this", "promiser_gid", v, cf_int);
 
+        NewScalar("this", "bundle", pp->bundle, cf_str);
+        NewScalar("this", "namespace", pp->namespace, cf_str);
+
         /* Must expand $(this.promiser) here for arg dereferencing in things
            like edit_line and methods, but we might have to
            adjust again later if the value changes  -- need to qualify this
@@ -699,8 +724,10 @@ void ExpandPromiseAndDo(enum cfagenttype agent, char *scopeid, Promise *pp, Rlis
 
         switch (agent)
         {
-        case cf_common:
-            ShowPromise(pexp, 6);
+        case AGENT_TYPE_COMMON:
+            ShowPromise(report_context, REPORT_OUTPUT_TYPE_TEXT, pexp, 6);
+            ShowPromise(report_context, REPORT_OUTPUT_TYPE_HTML, pexp, 6);
+            CheckRecursion(report_context, pexp);
             ReCheckAllConstraints(pexp);
             break;
 
@@ -718,6 +745,13 @@ void ExpandPromiseAndDo(enum cfagenttype agent, char *scopeid, Promise *pp, Rlis
             ConvergeVarHashPromise(pp->bundle, pexp, true);
         }
 
+        if (strcmp(pp->agentsubtype, "meta") == 0)
+           {
+           char namespace[CF_BUFSIZE];
+           snprintf(namespace,CF_BUFSIZE,"%s_meta",pp->bundle);
+           ConvergeVarHashPromise(namespace, pp, true);
+           }
+        
         DeletePromise(pexp);
 
         /* End thread monitor */
@@ -729,7 +763,7 @@ void ExpandPromiseAndDo(enum cfagenttype agent, char *scopeid, Promise *pp, Rlis
 
 /*********************************************************************/
 
-Rval EvaluateFinalRval(char *scopeid, Rval rval, int forcelist, Promise *pp)
+Rval EvaluateFinalRval(const char *scopeid, Rval rval, int forcelist, const Promise *pp)
 {
     Rlist *rp;
     Rval returnval, newret;
@@ -843,13 +877,12 @@ static void RewriteInnerVarStringAsLocalCopyName(char *string)
 
 /*********************************************************************/
 
-static void CopyLocalizedIteratorsToThisScope(char *scope, Rlist *listvars)
+static void CopyLocalizedIteratorsToThisScope(const char *scope, const Rlist *listvars)
 {
-    Rlist *rp;
     Rval retval;
     char format[CF_SMALLBUF];
 
-    for (rp = listvars; rp != NULL; rp = rp->next)
+    for (const Rlist *rp = listvars; rp != NULL; rp = rp->next)
     {
         // Add re-mapped variables to context "this", marked with scope . -> #
 
@@ -934,9 +967,8 @@ int IsExpandable(const char *str)
 
 /*********************************************************************/
 
-int IsNakedVar(char *str, char vtype)
+int IsNakedVar(const char *str, char vtype)
 {
-    char *sp, last;
     int count = 0;
 
     if (str == NULL || strlen(str) == 0)
@@ -944,7 +976,7 @@ int IsNakedVar(char *str, char vtype)
         return false;
     }
 
-    last = *(str + strlen(str) - 1);
+    char last = *(str + strlen(str) - 1);
 
     if (strlen(str) < 3)
     {
@@ -977,7 +1009,7 @@ int IsNakedVar(char *str, char vtype)
         break;
     }
 
-    for (sp = str; *sp != '\0'; sp++)
+    for (const char *sp = str; *sp != '\0'; sp++)
     {
         switch (*sp)
         {
@@ -1012,7 +1044,7 @@ int IsNakedVar(char *str, char vtype)
 
 /*********************************************************************/
 
-void GetNaked(char *s2, char *s1)
+void GetNaked(char *s2, const char *s1)
 /* copy @(listname) -> listname */
 {
     if (strlen(s1) < 4)
@@ -1036,7 +1068,7 @@ static void SetAnyMissingDefaults(Promise *pp)
     {
         if (GetConstraint(pp, "package_method") == NULL)
         {
-            AppendConstraint(&(pp->conlist), "package_method", (Rval) {"generic", CF_SCALAR}, "any", true);
+            ConstraintAppendToPromise(pp, "package_method", (Rval) {"generic", CF_SCALAR}, "any", true);
         }
     }
 }
@@ -1045,7 +1077,7 @@ static void SetAnyMissingDefaults(Promise *pp)
 /* General                                                           */
 /*********************************************************************/
 
-void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
+void ConvergeVarHashPromise(char *scope, const Promise *pp, int allow_redefine)
 {
     Constraint *cp, *cp_save = NULL;
     Attributes a = { {0} };
@@ -1059,7 +1091,7 @@ void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
         return;
     }
 
-    if (IsExcluded(pp->classes))
+    if (IsExcluded(pp->classes, pp->namespace))
     {
         return;
     }
@@ -1084,7 +1116,7 @@ void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
             {
             case CF_SCALAR:
 
-                if (IsExcluded(cp->rval.item))
+                if (IsExcluded(cp->rval.item, pp->namespace))
                 {
                     return;
                 }
@@ -1098,7 +1130,15 @@ void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
                 /* eval it: e.g. ifvarclass => not("a_class") */
 
                 res = EvaluateFunctionCall(cp->rval.item, NULL).rval;
-                excluded = IsExcluded(res.item);
+
+                /* Don't continue unless function was evaluated properly */
+                if (res.rtype != CF_SCALAR)
+                {
+                    DeleteRvalItem(res);
+                    return;
+                }
+
+                excluded = IsExcluded(res.item, pp->namespace);
 
                 DeleteRvalItem(res);
 
@@ -1161,12 +1201,38 @@ void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
 //a.transaction = GetTransactionConstraints(pp);
     a.classes = GetClassDefinitionConstraints(pp);
 
+    enum cfdatatype existing_var = GetVariable(scope, pp->promiser, &retval);
+
+    char qualified_scope[CF_MAXVARSIZE];
+
+    if (strcmp(pp->namespace, "default") == 0)
+       {
+       strcpy(qualified_scope, scope);
+       }
+    else
+       {
+       if (strchr(scope, ':') == NULL)
+          {
+          snprintf(qualified_scope, CF_MAXVARSIZE, "%s:%s", pp->namespace, scope);
+          }
+       else
+          {
+          strcpy(qualified_scope, scope);
+          }
+       }
+
     if (rval.item != NULL)
     {
         FnCall *fp = (FnCall *) rval.item;
 
         if (cp->rval.rtype == CF_FNCALL)
         {
+            if (existing_var != cf_notype)
+               {
+               // Already did this
+               return;
+               }
+
             FnCallResult res = EvaluateFunctionCall(fp, pp);
 
             if (res.status == FNCALL_FAILURE)
@@ -1209,7 +1275,7 @@ void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
         {
             /* See if the variable needs recursively expanding again */
 
-            Rval returnval = EvaluateFinalRval(scope, rval, true, pp);
+            Rval returnval = EvaluateFinalRval(qualified_scope, rval, true, pp);
 
             DeleteRvalItem(rval);
 
@@ -1217,13 +1283,13 @@ void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
             rval = returnval;
         }
 
-        if (GetVariable(scope, pp->promiser, &retval) != cf_notype)
+        if (existing_var != cf_notype)
         {
             if (ok_redefine)    /* only on second iteration, else we ignore broken promises */
             {
-                DeleteVariable(scope, pp->promiser);
+                DeleteVariable(qualified_scope, pp->promiser);
             }
-            else if ((THIS_AGENT_TYPE == cf_common) && (CompareRval(retval, rval) == false))
+            else if ((THIS_AGENT_TYPE == AGENT_TYPE_COMMON) && (CompareRval(retval, rval) == false))
             {
                 switch (rval.rtype)
                 {
@@ -1273,11 +1339,10 @@ void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
             }
         }
 
-        if (!AddVariableHash(scope, pp->promiser, rval, Typename2Datatype(cp->lval),
+        if (!AddVariableHash(qualified_scope, pp->promiser, rval, Typename2Datatype(cp->lval),
                              cp->audit->filename, cp->offset.line))
         {
-            CfOut(cf_verbose, "", "Unable to converge %s.%s value (possibly empty or infinite regression)\n", scope,
-                  pp->promiser);
+            CfOut(cf_verbose, "", "Unable to converge %s.%s value (possibly empty or infinite regression)\n", qualified_scope, pp->promiser);
             PromiseRef(cf_verbose, pp);
             cfPS(cf_noreport, CF_FAIL, "", pp, a, " !! Couldn't add variable %s", pp->promiser);
         }
@@ -1300,7 +1365,7 @@ void ConvergeVarHashPromise(char *scope, Promise *pp, int allow_redefine)
 /* Levels                                                            */
 /*********************************************************************/
 
-static int Epimenides(char *var, Rval rval, int level)
+static int Epimenides(const char *var, Rval rval, int level)
 {
     Rlist *rp, *list;
     char exp[CF_EXPANDSIZE];
@@ -1390,6 +1455,8 @@ static int CompareRval(Rval rval1, Rval rval2)
 
 /*******************************************************************/
 
+// FIX: this function is a mixture of Equal/Compare (boolean/diff).
+// somebody is bound to misuse this at some point
 static int CompareRlist(Rlist *list1, Rlist *list2)
 {
     Rlist *rp1, *rp2;
@@ -1437,4 +1504,159 @@ static int CompareRlist(Rlist *list1, Rlist *list2)
     }
 
     return true;
+}
+
+/*******************************************************************/
+
+static void CheckRecursion(const ReportContext *report_context, Promise *pp)
+
+{
+    Constraint *cp;
+    char *type;
+    char *scope;
+    Bundle *bp;
+    FnCall *fp;
+    SubType *sbp;
+    Promise *ppsub;
+
+    // Check for recursion of bundles so that knowledge map will reflect these cases
+
+    if (strcmp("services", pp->agentsubtype) == 0)
+       {
+       ParseServices(report_context, pp);
+       }
+
+    for (cp = pp->conlist; cp != NULL; cp = cp->next)
+    {        
+        if (strcmp("usebundle", cp->lval) == 0)
+        {
+            type = "agent";
+        }
+        else  if (strcmp("edit_line", cp->lval) == 0 || strcmp("edit_xml", cp->lval) == 0)
+        {
+            type = cp->lval;
+        }
+        else
+        {
+            continue;
+        }
+
+        switch (cp->rval.rtype)
+        {
+           case CF_SCALAR:
+               scope = (char *)cp->rval.item;
+               break;
+
+           case CF_FNCALL:
+               fp = (FnCall *)cp->rval.item;
+               scope = fp->name;
+               break;
+
+           default:
+               continue;
+        }
+
+       if ((bp = GetBundle(PolicyFromPromise(pp), scope, type)))
+       {
+           for (sbp = bp->subtypes; sbp != NULL; sbp = sbp->next)
+           {
+               for (ppsub = sbp->promiselist; ppsub != NULL; ppsub = ppsub->next)
+               {
+                   ExpandPromise(AGENT_TYPE_COMMON, scope, ppsub, NULL, report_context);
+               }
+           }
+       }
+    }
+}
+
+/*****************************************************************************/
+
+static void ParseServices(const ReportContext *report_context, Promise *pp)
+{
+    FnCall *default_bundle = NULL;
+    Rlist *args = NULL;
+    Attributes a = { {0} };
+
+    a = GetServicesAttributes(pp);
+
+    // Need to set up the default service pack to eliminate syntax, analogous to verify_services.c
+
+    if (GetConstraintValue("service_bundle", pp, CF_SCALAR) == NULL)
+    {
+        switch (a.service.service_policy)
+        {
+        case cfsrv_start:
+            AppendRlist(&args, pp->promiser, CF_SCALAR);
+            AppendRlist(&args, "start", CF_SCALAR);
+            break;
+
+        case cfsrv_restart:
+            AppendRlist(&args, pp->promiser, CF_SCALAR);
+            AppendRlist(&args, "restart", CF_SCALAR);
+            break;
+
+        case cfsrv_reload:
+            AppendRlist(&args, pp->promiser, CF_SCALAR);
+            AppendRlist(&args, "restart", CF_SCALAR);
+            break;
+
+        case cfsrv_stop:
+        case cfsrv_disable:
+        default:
+            AppendRlist(&args, pp->promiser, CF_SCALAR);
+            AppendRlist(&args, "stop", CF_SCALAR);
+            break;
+
+        }
+
+        default_bundle = NewFnCall("standard_services", args);
+
+        ConstraintAppendToPromise(pp, "service_bundle", (Rval) {default_bundle, CF_FNCALL}, "any", false);
+        a.havebundle = true;
+    }
+
+// Set $(this.service_policy) for flexible bundle adaptation
+
+    switch (a.service.service_policy)
+    {
+    case cfsrv_start:
+        NewScalar("this", "service_policy", "start", cf_str);
+        break;
+
+    case cfsrv_restart:
+        NewScalar("this", "service_policy", "restart", cf_str);
+        break;
+
+    case cfsrv_reload:
+        NewScalar("this", "service_policy", "reload", cf_str);
+        break;
+        
+    case cfsrv_stop:
+    case cfsrv_disable:
+    default:
+        NewScalar("this", "service_policy", "stop", cf_str);
+        break;
+    }
+
+    if (default_bundle && GetBundle(PolicyFromPromise(pp), default_bundle->name, "agent") == NULL)
+    {
+        return;
+    }
+
+    SubType *sbp;
+    Promise *ppsub;
+    Bundle *bp;
+
+    if ((bp = GetBundle(PolicyFromPromise(pp), default_bundle->name, "agent")))
+       {
+       MapBodyArgs(bp->name, args, bp->args);
+           
+       for (sbp = bp->subtypes; sbp != NULL; sbp = sbp->next)
+          {
+          for (ppsub = sbp->promiselist; ppsub != NULL; ppsub = ppsub->next)
+             {
+             ExpandPromise(AGENT_TYPE_COMMON, bp->name, ppsub, NULL, report_context);
+             }
+          }
+       }
 }

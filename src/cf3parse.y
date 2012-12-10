@@ -1,18 +1,43 @@
 
 %{
 
-/*******************************************************************/
-/*                                                                 */
-/*  PARSER for cfengine 3                                          */
-/*                                                                 */
-/*******************************************************************/
+/*
+   Copyright (C) Cfengine AS
+
+   This file is part of Cfengine 3 - written and maintained by Cfengine AS.
+
+   This program is free software; you can redistribute it and/or modify it
+   under the terms of the GNU General Public License as published by the
+   Free Software Foundation; version 3.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+  You should have received a copy of the GNU General Public License
+  along with this program; if not, write to the Free Software
+  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA
+
+  To the extent this program is licensed as part of the Enterprise
+  versions of Cfengine, the applicable Commerical Open Source License
+  (COSL) may apply to this file if you as a licensee so wish it. See
+  included file COSL.txt.
+*/
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 #include "parser_state.h"
+
+#include "constraints.h"
+#include "env_context.h"
+#include "fncall.h"
+
+// FIX: remove
+#include "syntax.h"
 
 extern char *yytext;
 
+static void DebugBanner(const char *s);
 static void fatal_yyerror(const char *s);
 
 static bool INSTALL_SKIP = false;
@@ -21,7 +46,7 @@ static bool INSTALL_SKIP = false;
 
 %}
 
-%token ID QSTRING CLASS CATEGORY BUNDLE BODY ASSIGN ARROW NAKEDVAR
+%token IDSYNTAX BLOCKID QSTRING CLASS CATEGORY BUNDLE BODY ASSIGN ARROW NAKEDVAR
 
 %%
 
@@ -47,6 +72,7 @@ bundle:                BUNDLE
                            DebugBanner("Bundle");
                            P.block = "bundle";
                            P.rval = (Rval) { NULL, '\0' };
+                           DeleteRlist(P.currentRlist);
                            P.currentRlist = NULL;
                            P.currentstring = NULL;
                            strcpy(P.blockid,"");
@@ -60,6 +86,7 @@ body:                  BODY
                            DebugBanner("Body");
                            P.block = "body";
                            strcpy(P.blockid,"");
+                           DeleteRlist(P.currentRlist);
                            P.currentRlist = NULL;
                            P.currentstring = NULL;
                            strcpy(P.blocktype,"");
@@ -67,16 +94,18 @@ body:                  BODY
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-typeid:                ID
+typeid:                IDSYNTAX
                        {
                            strncpy(P.blocktype,P.currentid,CF_MAXVARSIZE);
                            CfDebug("Found block type %s for %s\n",P.blocktype,P.block);
+
+                           DeleteRlist(P.useargs);
                            P.useargs = NULL;
                        };
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-blockid:               ID
+blockid:               IDSYNTAX
                        {
                            strncpy(P.blockid,P.currentid,CF_MAXVARSIZE);
                            P.offsets.last_block_id = P.offsets.last_id;
@@ -92,12 +121,12 @@ usearglist:            '('
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 aitems:                aitem
-                     | aitem ',' aitems
+                     | aitems ',' aitem
                      |;
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-aitem:                 ID  /* recipient of argument is never a literal */
+aitem:                 IDSYNTAX  /* recipient of argument is never a literal */
                        {
                            AppendRlist(&(P.useargs),P.currentid,CF_SCALAR);
                        };
@@ -106,12 +135,12 @@ aitem:                 ID  /* recipient of argument is never a literal */
 
 bundlebody:            '{'
                        {
-                           if (RelevantBundle(THIS_AGENT,P.blocktype))
+                           if (RelevantBundle(CF_AGENTTYPES[THIS_AGENT_TYPE], P.blocktype))
                            {
                                CfDebug("We a compiling everything here\n");
                                INSTALL_SKIP = false;
                            }
-                           else if (strcmp(THIS_AGENT,P.blocktype) != 0)
+                           else if (strcmp(CF_AGENTTYPES[THIS_AGENT_TYPE], P.blocktype) != 0)
                            {
                                CfDebug("This is for a different agent\n");
                                INSTALL_SKIP = true;
@@ -119,7 +148,7 @@ bundlebody:            '{'
 
                            if (!INSTALL_SKIP)
                            {
-                               P.currentbundle = AppendBundle(&BUNDLES,P.blockid,P.blocktype,P.useargs);
+                               P.currentbundle = AppendBundle(P.policy, P.blockid, P.blocktype, P.useargs, P.filename);
                                P.currentbundle->offset.line = P.line_no;
                                P.currentbundle->offset.start = P.offsets.last_block_id;
                            }
@@ -128,6 +157,7 @@ bundlebody:            '{'
                                P.currentbundle = NULL;
                            }
 
+                           DeleteRlist(P.useargs);
                            P.useargs = NULL;
                        }
 
@@ -160,13 +190,16 @@ statement:             category
 
 bodybody:              '{'
                        {
-                           P.currentbody = AppendBody(&BODIES,P.blockid,P.blocktype,P.useargs);
+                           P.currentbody = AppendBody(P.policy, P.blockid, P.blocktype, P.useargs, P.filename);
                            if (P.currentbody)
                            {
                                P.currentbody->offset.line = P.line_no;
                                P.currentbody->offset.start = P.offsets.last_block_id;
                            }
+
+                           DeleteRlist(P.useargs);
                            P.useargs = NULL;
+
                            strcpy(P.currentid,"");
                            CfDebug("Starting block\n");
                        }
@@ -214,11 +247,11 @@ selection:             id                         /* BODY ONLY */
 
                                if (P.currentclasses == NULL)
                                {
-                                   cp = AppendConstraint(&((P.currentbody)->conlist),P.lval,P.rval,"any",P.isbody);
+                                   cp = ConstraintAppendToBody(P.currentbody, P.lval, P.rval, "any", P.references_body);
                                }
                                else
                                {
-                                   cp = AppendConstraint(&((P.currentbody)->conlist),P.lval,P.rval,P.currentclasses,P.isbody);
+                                   cp = ConstraintAppendToBody(P.currentbody,P.lval,P.rval,P.currentclasses,P.references_body);
                                }
                                cp->offset.line = P.line_no;
                                cp->offset.start = P.offsets.last_id;
@@ -230,11 +263,26 @@ selection:             id                         /* BODY ONLY */
                                DeleteRvalItem(P.rval);
                            }
 
+                           if (strcmp(P.blockid,"control") == 0 && strcmp(P.blocktype,"file") == 0)
+                           {
+                               if (strcmp(P.lval,"namespace") == 0)
+                               {
+                                   if (P.rval.rtype != CF_SCALAR)
+                                   {
+                                       yyerror("namespace must be a constant scalar string");
+                                   }
+                                   else
+                                   {
+                                       PolicySetNameSpace(P.policy, P.rval.item);
+                                   }
+                               }
+                           }
+                           
                            if (strcmp(P.blockid,"control") == 0 && strcmp(P.blocktype,"common") == 0)
                            {
                                if (strcmp(P.lval,"inputs") == 0)
                                {
-                                   if (IsDefinedClass(P.currentclasses))
+                                   if (IsDefinedClass(P.currentclasses, CurrentNameSpace(P.policy)))
                                    {
                                        if (VINPUTLIST == NULL)
                                        {
@@ -282,7 +330,6 @@ category:              CATEGORY                  /* BUNDLE ONLY */
 
                            if (strcmp(P.block,"bundle") == 0)
                            {
-                               CheckSubType(P.blocktype,P.currenttype); /* FIXME: unused? */
                                if (!INSTALL_SKIP)
                                {
                                    P.currentstype = AppendSubType(P.currentbundle,P.currenttype);
@@ -309,7 +356,7 @@ promise:               promiser                    /* BUNDLE ONLY */
                                P.currentpromise = AppendPromise(P.currentstype, P.promiser,
                                                                 P.rval,
                                                                 P.currentclasses ? P.currentclasses : "any",
-                                                                P.blockid, P.blocktype);
+                                                                P.blockid, P.blocktype,CurrentNameSpace(P.policy));
                                P.currentpromise->offset.line = P.line_no;
                                P.currentpromise->offset.start = P.offsets.last_string;
                                P.currentpromise->offset.context = P.offsets.last_class_id;
@@ -324,6 +371,7 @@ promise:               promiser                    /* BUNDLE ONLY */
                        {
                            CfDebug("End implicit promise %s\n\n",P.promiser);
                            strcpy(P.currentid,"");
+                           DeleteRlist(P.currentRlist);
                            P.currentRlist = NULL;
                            free(P.promiser);
                            if (P.currentstring)
@@ -345,7 +393,7 @@ promise:               promiser                    /* BUNDLE ONLY */
                                P.currentpromise = AppendPromise(P.currentstype, P.promiser,
                                                                 (Rval) { NULL, CF_NOPROMISEE },
                                                                 P.currentclasses ? P.currentclasses : "any",
-                                                                P.blockid, P.blocktype);
+                                                                P.blockid, P.blocktype,CurrentNameSpace(P.policy));
                                P.currentpromise->offset.line = P.line_no;
                                P.currentpromise->offset.start = P.offsets.last_string;
                                P.currentpromise->offset.context = P.offsets.last_class_id;
@@ -362,6 +410,7 @@ promise:               promiser                    /* BUNDLE ONLY */
 
                            /* Don't free these */
                            strcpy(P.currentid,"");
+                           DeleteRlist(P.currentRlist);
                            P.currentRlist = NULL;
                            free(P.promiser);
                            if (P.currentstring)
@@ -390,15 +439,14 @@ constraint:            id                        /* BUNDLE ONLY */
                            if (!INSTALL_SKIP)
                            {
                                Constraint *cp = NULL;
-                               SubTypeSyntax ss = CheckSubType(P.blocktype,P.currenttype);
-                               CheckConstraint(P.currenttype, P.blockid, P.lval, P.rval, ss);
-                               cp = AppendConstraint(&(P.currentpromise->conlist),P.lval,P.rval,"any",P.isbody);
+                               SubTypeSyntax ss = SubTypeSyntaxLookup(P.blocktype,P.currenttype);
+                               CheckConstraint(P.currenttype, CurrentNameSpace(P.policy), P.blockid, P.lval, P.rval, ss);
+                               cp = ConstraintAppendToPromise(P.currentpromise, P.lval, P.rval, "any", P.references_body);
                                cp->offset.line = P.line_no;
                                cp->offset.start = P.offsets.last_id;
                                cp->offset.end = P.offsets.current;
                                cp->offset.context = P.offsets.last_class_id;
                                P.currentstype->offset.end = P.offsets.current;
-                               CheckPromise(P.currentpromise);
 
                                // Cache whether there are subbundles for later $(this.promiser) logic
 
@@ -410,6 +458,7 @@ constraint:            id                        /* BUNDLE ONLY */
 
                                P.rval = (Rval) { NULL, '\0' };
                                strcpy(P.lval,"no lval");
+                               DeleteRlist(P.currentRlist);
                                P.currentRlist = NULL;
                            }
                            else
@@ -428,19 +477,27 @@ class:                 CLASS
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-id:                    ID
+id:                    IDSYNTAX
                        {
                            strncpy(P.lval,P.currentid,CF_MAXVARSIZE);
+                           DeleteRlist(P.currentRlist);
                            P.currentRlist = NULL;
                            CfDebug("Recorded LVAL %s\n",P.lval);
                        };
 
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-rval:                  ID
+rval:                  IDSYNTAX
                        {
                            P.rval = (Rval) { xstrdup(P.currentid), CF_SCALAR };
-                           P.isbody = true;
+                           P.references_body = true;
+                           CfDebug("Recorded IDRVAL %s\n", P.currentid);
+                       }
+                     | BLOCKID
+                       {
+                           P.rval = (Rval) { xstrdup(P.currentid), CF_SCALAR };
+                           P.references_body = true;
                            CfDebug("Recorded IDRVAL %s\n", P.currentid);
                        }
                      | QSTRING
@@ -449,7 +506,7 @@ rval:                  ID
                            CfDebug("Recorded scalarRVAL %s\n", P.currentstring);
 
                            P.currentstring = NULL;
-                           P.isbody = false;
+                           P.references_body = false;
 
                            if (P.currentpromise)
                            {
@@ -465,18 +522,19 @@ rval:                  ID
                            CfDebug("Recorded saclarvariableRVAL %s\n", P.currentstring);
 
                            P.currentstring = NULL;
-                           P.isbody = false;
+                           P.references_body = false;
                        }
                      | list
                        {
-                           P.rval = (Rval) { P.currentRlist, CF_LIST };
+                           P.rval = (Rval) { CopyRlist(P.currentRlist), CF_LIST };
+                           DeleteRlist(P.currentRlist);
                            P.currentRlist = NULL;
-                           P.isbody = false;
+                           P.references_body = false;
                        }
                      | usefunction
                        {
-                           P.isbody = false;
                            P.rval = (Rval) { P.currentfncall[P.arg_nesting+1], CF_FNCALL };
+                           P.references_body = false;
                        };
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
@@ -487,13 +545,15 @@ list:                  '{'
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-litems:                litem
-                     | litem ',' litems
-                     |;
+litems:                litems_int
+                     | litems_int ',';
+
+litems_int:            litem
+                     | litems_int ',' litem;
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-litem:                 ID
+litem:                 IDSYNTAX
                        {
                            AppendRlist((Rlist **)&P.currentRlist,P.currentid,CF_SCALAR);
                        }
@@ -521,9 +581,13 @@ litem:                 ID
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-functionid:            ID
+functionid:            IDSYNTAX
                        {
                            CfDebug("Found function identifier %s\n",P.currentid);
+                       }
+                     | BLOCKID
+                       {
+                           CfDebug("Found qualified function identifier %s\n",P.currentid);
                        }
                      | NAKEDVAR
                        {
@@ -582,7 +646,7 @@ gaitems:               gaitem
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-gaitem:                ID
+gaitem:                IDSYNTAX
                        {
                            /* currently inside a use function */
                            AppendRlist(&P.giveargs[P.arg_nesting],P.currentid,CF_SCALAR);
@@ -662,4 +726,11 @@ static void fatal_yyerror(const char *s)
     }
 
     FatalError("%s: %d,%d: Fatal error during parsing: %s, near token \'%.20s\'\n", P.filename, P.line_no, P.line_pos, s, sp ? sp : "NULL");
+}
+
+static void DebugBanner(const char *s)
+{
+    CfDebug("----------------------------------------------------------------\n");
+    CfDebug("  %s                                                            \n", s);
+    CfDebug("----------------------------------------------------------------\n");
 }

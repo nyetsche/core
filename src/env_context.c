@@ -23,30 +23,47 @@
   included file COSL.txt.
   
 */
-/*****************************************************************************/
-/*                                                                           */
-/* File: env_context.c                                                       */
-/*                                                                           */
-/*****************************************************************************/
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "env_context.h"
 
+#include "constraints.h"
+#include "promises.h"
+#include "files_names.h"
 #include "logic_expressions.h"
 #include "dbm_api.h"
+#include "syntax.h"
+#include "item_lib.h"
+#include "conversion.h"
+#include "reporting.h"
+#include "expand.h"
+#include "matching.h"
+#include "hashes.h"
+#include "attributes.h"
+#include "cfstream.h"
+#include "fncall.h"
+#include "string_lib.h"
 
 /*****************************************************************************/
 
 static bool ValidClassName(const char *str);
-static int GetORAtom(char *start, char *buffer);
-static int HasBrackets(char *s, Promise *pp);
-static int IsBracketed(char *s);
+static int GetORAtom(const char *start, char *buffer);
+static int HasBrackets(const char *s, Promise *pp);
+static int IsBracketed(const char *s);
 
 /*****************************************************************************/
+
+AlphaList VHANDLES;
+AlphaList VHEAP;
+AlphaList VHARDHEAP;
+AlphaList VADDCLASSES;
+Item *VNEGHEAP = NULL;
+Item *ABORTBUNDLEHEAP = NULL;
 
 static Item *ABORTHEAP = NULL;
 static Item *VDELCLASSES = NULL;
 static Rlist *PRIVCLASSHEAP = NULL;
+
+static bool ABORTBUNDLE = false;
 
 /*****************************************************************************/
 /* Level                                                                     */
@@ -69,7 +86,7 @@ static int EvalClassExpression(Constraint *cp, Promise *pp)
         CfOut(cf_error, "", " !! EvalClassExpression internal diagnostic discovered an ill-formed condition");
     }
 
-    if (!IsDefinedClass(pp->classes))
+    if (!IsDefinedClass(pp->classes, pp->namespace))
     {
         return false;
     }
@@ -79,7 +96,7 @@ static int EvalClassExpression(Constraint *cp, Promise *pp)
         return false;
     }
 
-    if (IsDefinedClass(pp->promiser))
+    if (IsDefinedClass(pp->promiser, pp->namespace))
     {
         if (GetIntConstraint("persistence", pp) == 0)
         {
@@ -125,7 +142,7 @@ static int EvalClassExpression(Constraint *cp, Promise *pp)
             return false;
         }
 
-        if (IsDefinedClass((char *) cp->rval.item))
+        if (IsDefinedClass((char *) cp->rval.item, pp->namespace))
         {
             return true;
         }
@@ -142,7 +159,7 @@ static int EvalClassExpression(Constraint *cp, Promise *pp)
             return false;
         }
 
-        if (IsDefinedClass((char *) cp->rval.item))
+        if (IsDefinedClass((char *) cp->rval.item, pp->namespace))
         {
             return false;
         }
@@ -174,7 +191,7 @@ static int EvalClassExpression(Constraint *cp, Promise *pp)
             return false;
         }
 
-        snprintf(splay, CF_MAXVARSIZE, "%s+%s+%d", VFQNAME, VIPADDRESS, getuid());
+        snprintf(splay, CF_MAXVARSIZE, "%s+%s+%ju", VFQNAME, VIPADDRESS, (uintmax_t)getuid());
         hash = (double) GetHash(splay);
         n = (int) (total * hash / (double) CF_HASHTABLESIZE);
 
@@ -182,7 +199,7 @@ static int EvalClassExpression(Constraint *cp, Promise *pp)
         {
             if (i == n)
             {
-                NewClass(rp->item);
+                NewClass(rp->item, pp->namespace);
                 return true;
             }
         }
@@ -233,7 +250,7 @@ static int EvalClassExpression(Constraint *cp, Promise *pp)
             return false;
         }
 
-        result = IsDefinedClass((char *) (rp->item));
+        result = IsDefinedClass((char *) (rp->item), pp->namespace);
 
         result_and = result_and && result;
         result_or = result_or || result;
@@ -251,11 +268,11 @@ static int EvalClassExpression(Constraint *cp, Promise *pp)
 
                 if (strcmp(pp->bundletype, "common") == 0)
                 {
-                    NewClass(buffer);
+                    NewClass(buffer, pp->namespace);
                 }
                 else
                 {
-                    NewBundleClass(buffer, pp->bundle);
+                    NewBundleClass(buffer, pp->bundle, pp->namespace);
                 }
 
                 CfDebug(" ?? \'Strategy\' distribution class interval -> %s\n", buffer);
@@ -329,13 +346,13 @@ void KeepClassContextPromise(Promise *pp)
                 {
                     CfOut(cf_verbose, "", " ?> defining explicit persistent class %s (%d mins)\n", pp->promiser,
                           a.context.persistent);
-                    NewPersistentContext(pp->promiser, a.context.persistent, cfreset);
-                    NewClass(pp->promiser);
+                    NewPersistentContext(pp->promiser, pp->namespace, a.context.persistent, cfreset);
+                    NewClass(pp->promiser, pp->namespace);
                 }
                 else
                 {
                     CfOut(cf_verbose, "", " ?> defining explicit global class %s\n", pp->promiser);
-                    NewClass(pp->promiser);
+                    NewClass(pp->promiser, pp->namespace);
                 }
             }
         }
@@ -348,7 +365,7 @@ void KeepClassContextPromise(Promise *pp)
 
 // If this is some other kind of bundle (else here??)
 
-    if (strcmp(pp->bundletype, THIS_AGENT) == 0 || FullTextMatch("edit_.*", pp->bundletype))
+    if (strcmp(pp->bundletype, CF_AGENTTYPES[THIS_AGENT_TYPE]) == 0 || FullTextMatch("edit_.*", pp->bundletype))
     {
         if (EvalClassExpression(a.context.expression, pp))
         {
@@ -365,13 +382,13 @@ void KeepClassContextPromise(Promise *pp)
                           a.context.persistent);
                     CfOut(cf_verbose, "",
                           " ?> Warning: persistent classes are global in scope even in agent bundles\n");
-                    NewPersistentContext(pp->promiser, a.context.persistent, cfreset);
-                    NewClass(pp->promiser);
+                    NewPersistentContext(pp->promiser, pp->namespace, a.context.persistent, cfreset);
+                    NewClass(pp->promiser, pp->namespace);
                 }
                 else
                 {
                     CfOut(cf_verbose, "", " ?> defining explicit local bundle class %s\n", pp->promiser);
-                    NewBundleClass(pp->promiser, pp->bundle);
+                    NewBundleClass(pp->promiser, pp->bundle, pp->namespace);
                 }
             }
         }
@@ -385,15 +402,25 @@ void KeepClassContextPromise(Promise *pp)
 
 /*******************************************************************/
 
-void NewClass(const char *oclass)
+void NewClass(const char *oclass, const char *namespace)
 {
     Item *ip;
     char class[CF_MAXVARSIZE];
+    char canonclass[CF_MAXVARSIZE];
 
-    strncpy(class, oclass, CF_MAXVARSIZE);
-    Chop(class);
-    CanonifyNameInPlace(class);
-
+    strcpy(canonclass, oclass);
+    Chop(canonclass);
+    CanonifyNameInPlace(canonclass);
+    
+    if (namespace && strcmp(namespace, "default") != 0)
+       {
+       snprintf(class, CF_MAXVARSIZE, "%s:%s", namespace, canonclass);
+       }
+    else
+       {
+       strncpy(class, canonclass, CF_MAXVARSIZE);
+       }
+    
     CfDebug("NewClass(%s)\n", class);
 
     if (strlen(class) == 0)
@@ -422,9 +449,9 @@ void NewClass(const char *oclass)
 
     for (ip = ABORTHEAP; ip != NULL; ip = ip->next)
     {
-        if (IsDefinedClass(ip->name))
+        if (IsDefinedClass(ip->name, namespace))
         {
-            CfOut(cf_error, "", "cf-agent aborted on defined class \"%s\" defined in bundle %s\n", class, THIS_BUNDLE);
+            CfOut(cf_error, "", "cf-agent aborted on defined class \"%s\" defined in bundle %s\n", ip->name, THIS_BUNDLE);
             exit(1);
         }
     }
@@ -433,7 +460,7 @@ void NewClass(const char *oclass)
     {
         for (ip = ABORTBUNDLEHEAP; ip != NULL; ip = ip->next)
         {
-            if (IsDefinedClass(ip->name))
+            if (IsDefinedClass(ip->name, namespace))
             {
                 CfOut(cf_error, "", " -> Setting abort for \"%s\" when setting \"%s\"", ip->name, class);
                 ABORTBUNDLE = true;
@@ -445,21 +472,117 @@ void NewClass(const char *oclass)
 
 /*********************************************************************/
 
-void DeleteClass(char *class)
+void DeleteClass(const char *oclass, const char *namespace)
 {
+    char class[CF_MAXVARSIZE];
+ 
+    if (strchr(oclass, ':'))
+    {
+        strncpy(class, oclass, CF_MAXVARSIZE);
+    }
+    else
+    {
+        if (namespace && strcmp(namespace, "default") != 0)
+        {
+            snprintf(class, CF_MAXVARSIZE, "%s:%s", namespace, oclass);
+        }
+        else
+        {
+            strncpy(class, oclass, CF_MAXVARSIZE);
+        }
+    }
+
     DeleteFromAlphaList(&VHEAP, class);
     DeleteFromAlphaList(&VADDCLASSES, class);
 }
 
 /*******************************************************************/
 
-void NewBundleClass(char *class, char *bundle)
+void HardClass(const char *oclass)
+{
+    Item *ip;
+    char class[CF_MAXVARSIZE];
+
+    strcpy(class, oclass);
+    Chop(class);
+    CanonifyNameInPlace(class);
+
+    CfDebug("HardClass(%s)\n", class);
+
+    if (strlen(class) == 0)
+    {
+        return;
+    }
+
+    if (IsRegexItemIn(ABORTBUNDLEHEAP, class))
+    {
+        CfOut(cf_error, "", "Bundle aborted on defined class \"%s\"\n", class);
+        ABORTBUNDLE = true;
+    }
+
+    if (IsRegexItemIn(ABORTHEAP, class))
+    {
+        CfOut(cf_error, "", "cf-agent aborted on defined class \"%s\"\n", class);
+        exit(1);
+    }
+
+    if (InAlphaList(&VHARDHEAP, class))
+    {
+        return;
+    }
+
+    PrependAlphaList(&VHARDHEAP, class);
+
+    for (ip = ABORTHEAP; ip != NULL; ip = ip->next)
+    {
+        if (IsDefinedClass(ip->name, NULL))
+        {
+            CfOut(cf_error, "", "cf-agent aborted on defined class \"%s\" defined in bundle %s\n", ip->name, THIS_BUNDLE);
+            exit(1);
+        }
+    }
+
+    if (!ABORTBUNDLE)
+    {
+        for (ip = ABORTBUNDLEHEAP; ip != NULL; ip = ip->next)
+        {
+            if (IsDefinedClass(ip->name, NULL))
+            {
+                CfOut(cf_error, "", " -> Setting abort for \"%s\" when setting \"%s\"", ip->name, class);
+                ABORTBUNDLE = true;
+                break;
+            }
+        }
+    }
+}
+
+/*******************************************************************/
+
+void DeleteHardClass(const char *oclass)
+{
+    char class[CF_MAXVARSIZE];
+
+    strncpy(class, oclass, CF_MAXVARSIZE);
+
+    DeleteFromAlphaList(&VHARDHEAP, oclass);
+}
+
+/*******************************************************************/
+
+void NewBundleClass(const char *class, const char *bundle, const char *namespace)
 {
     char copy[CF_BUFSIZE];
     Item *ip;
 
-    memset(copy, 0, CF_BUFSIZE);
-    strncpy(copy, class, CF_MAXVARSIZE);
+    if (namespace && strcmp(namespace, "default") != 0)
+    {
+        snprintf(copy, CF_MAXVARSIZE, "%s:%s", namespace, class);
+    }
+    else
+    {
+        strncpy(copy, class, CF_MAXVARSIZE);
+    }
+
     Chop(copy);
 
     if (strlen(copy) == 0)
@@ -468,7 +591,7 @@ void NewBundleClass(char *class, char *bundle)
     }
 
     CfDebug("NewBundleClass(%s)\n", copy);
-
+    
     if (IsRegexItemIn(ABORTBUNDLEHEAP, copy))
     {
         CfOut(cf_error, "", "Bundle %s aborted on defined class \"%s\"\n", bundle, copy);
@@ -483,9 +606,7 @@ void NewBundleClass(char *class, char *bundle)
 
     if (InAlphaList(&VHEAP, copy))
     {
-        CfOut(cf_error, "",
-              "WARNING - private class \"%s\" in bundle \"%s\" shadows a global class - you should choose a different name to avoid conflicts",
-              copy, bundle);
+        CfOut(cf_error, "", "WARNING - private class \"%s\" in bundle \"%s\" shadows a global class - you should choose a different name to avoid conflicts", copy, bundle);
     }
 
     if (InAlphaList(&VADDCLASSES, copy))
@@ -497,7 +618,7 @@ void NewBundleClass(char *class, char *bundle)
 
     for (ip = ABORTHEAP; ip != NULL; ip = ip->next)
     {
-        if (IsDefinedClass(ip->name))
+        if (IsDefinedClass(ip->name, namespace))
         {
             CfOut(cf_error, "", "cf-agent aborted on defined class \"%s\" defined in bundle %s\n", copy, bundle);
             exit(1);
@@ -508,7 +629,7 @@ void NewBundleClass(char *class, char *bundle)
     {
         for (ip = ABORTBUNDLEHEAP; ip != NULL; ip = ip->next)
         {
-            if (IsDefinedClass(ip->name))
+            if (IsDefinedClass(ip->name, namespace))
             {
                 CfOut(cf_error, "", " -> Setting abort for \"%s\" when setting \"%s\"", ip->name, class);
                 ABORTBUNDLE = true;
@@ -520,10 +641,10 @@ void NewBundleClass(char *class, char *bundle)
 
 /*********************************************************************/
 
-Rlist *SplitContextExpression(char *context, Promise *pp)
+Rlist *SplitContextExpression(const char *context, Promise *pp)
 {
     Rlist *list = NULL;
-    char *sp, cbuff[CF_MAXVARSIZE];
+    char cbuff[CF_MAXVARSIZE];
 
     if (context == NULL)
     {
@@ -531,7 +652,7 @@ Rlist *SplitContextExpression(char *context, Promise *pp)
     }
     else
     {
-        for (sp = context; *sp != '\0'; sp++)
+        for (const char *sp = context; *sp != '\0'; sp++)
         {
             while (*sp == '|')
             {
@@ -629,7 +750,7 @@ Rlist *SplitContextExpression(char *context, Promise *pp)
 
 /*********************************************************************/
 
-static int IsBracketed(char *s)
+static int IsBracketed(const char *s)
  /* return true if the entire string is bracketed, not just if
     if contains brackets */
 {
@@ -659,7 +780,7 @@ static int IsBracketed(char *s)
             level++;
             if (i > 0 && !strchr(".&|!(", s[i - 1]))
             {
-                CfOut(cf_error, "", " !! Class expression \"%s\" has a missing operator in front of '('", s);
+                CfOut(cf_error, "", " !! Class expression \"%s\" has a missing operator in front of '(' at position %d", s, i);
             }
         }
 
@@ -691,9 +812,9 @@ static int IsBracketed(char *s)
 
 /*********************************************************************/
 
-static int GetORAtom(char *start, char *buffer)
+static int GetORAtom(const char *start, char *buffer)
 {
-    char *sp = start;
+    const char *sp = start;
     char *spc = buffer;
     int bracklevel = 0, len = 0;
 
@@ -724,7 +845,7 @@ static int GetORAtom(char *start, char *buffer)
 
 /*********************************************************************/
 
-static int HasBrackets(char *s, Promise *pp)
+static int HasBrackets(const char *s, Promise *pp)
  /* return true if contains brackets */
 {
     int i, level = 0, yes = 0;
@@ -735,9 +856,9 @@ static int HasBrackets(char *s, Promise *pp)
         {
             yes++;
             level++;
-            if (i > 0 && !strchr(".&|!(", s[i + 1]))
+            if (i > 0 && !strchr(".&|!(", s[i - 1]))
             {
-                CfOut(cf_error, "", " !! Class expression \"%s\" has a missing operator in front of '('", s);
+                 CfOut(cf_error, "", " !! Class expression \"%s\" has a missing operator in front of '(' at position %d", s, i);
             }
         }
 
@@ -943,21 +1064,52 @@ static bool ValidClassName(const char *str)
 
 /**********************************************************************/
 
-static ExpressionValue EvalTokenAsClass(const char *classname, void *param)
+static ExpressionValue EvalTokenAsClass(const char *classname, void *namespace)
 {
-    if (IsItemIn(VNEGHEAP, classname))
+    char qualified_class[CF_MAXVARSIZE];
+
+    if (strcmp(classname, "any") == 0)
+       {
+       return true;
+       }
+    
+    if (strchr(classname, ':'))
+    {
+        if (strncmp(classname, "default:", strlen("default:")) == 0)
+        {
+            snprintf(qualified_class, CF_MAXVARSIZE, "%s", classname + strlen("default:"));
+        }
+        else
+        {
+            snprintf(qualified_class, CF_MAXVARSIZE, "%s", classname);
+        }
+    }
+    else if (namespace != NULL && strcmp(namespace, "default") != 0)
+    {
+        snprintf(qualified_class, CF_MAXVARSIZE, "%s:%s", (char *)namespace, (char *)classname);
+    }
+    else
+    {
+        snprintf(qualified_class, CF_MAXVARSIZE, "%s", classname);
+    }
+
+    if (IsItemIn(VNEGHEAP, qualified_class))
     {
         return false;
     }
-    if (IsItemIn(VDELCLASSES, classname))
+    if (IsItemIn(VDELCLASSES, qualified_class))
     {
         return false;
     }
-    if (InAlphaList(&VHEAP, classname))
+    if (InAlphaList(&VHARDHEAP, (char *)classname))  // Hard classes are always unqualified
     {
         return true;
     }
-    if (InAlphaList(&VADDCLASSES, classname))
+    if (InAlphaList(&VHEAP, qualified_class))
+    {
+        return true;
+    }
+    if (InAlphaList(&VADDCLASSES, qualified_class))
     {
         return true;
     }
@@ -978,7 +1130,7 @@ static char *EvalVarRef(const char *varname, void *param)
 
 /**********************************************************************/
 
-bool IsDefinedClass(const char *class)
+bool IsDefinedClass(const char *class, const char *namespace)
 {
     ParseResult res;
 
@@ -1001,7 +1153,7 @@ bool IsDefinedClass(const char *class)
     {
         ExpressionValue r = EvalExpression(res.result,
                                            &EvalTokenAsClass, &EvalVarRef,
-                                           NULL);
+                                           (void *)namespace);
 
         FreeExpression(res.result);
 
@@ -1014,9 +1166,9 @@ bool IsDefinedClass(const char *class)
 
 /**********************************************************************/
 
-bool IsExcluded(const char *exception)
+bool IsExcluded(const char *exception, const char *namespace)
 {
-    return !IsDefinedClass(exception);
+    return !IsDefinedClass(exception, namespace);
 }
 
 /**********************************************************************/
@@ -1074,7 +1226,7 @@ bool EvalFileResult(const char *file_result, AlphaList *leaf_attr)
 
 /*****************************************************************************/
 
-void DeleteEntireHeap()
+void DeleteEntireHeap(void)
 {
     DeleteAlphaList(&VHEAP);
     InitAlphaList(&VHEAP);
@@ -1092,13 +1244,21 @@ void DeletePrivateClassContext()
 
 /*****************************************************************************/
 
-void PushPrivateClassContext()
+void PushPrivateClassContext(int inherit)
 {
     AlphaList *ap = xmalloc(sizeof(AlphaList));
 
 // copy to heap
     PushStack(&PRIVCLASSHEAP, CopyAlphaListPointers(ap, &VADDCLASSES));
+
     InitAlphaList(&VADDCLASSES);
+
+    if (inherit)
+    {
+        InitAlphaList(&VADDCLASSES);
+        DupAlphaListPointers(&VADDCLASSES, ap);
+    }
+    
 }
 
 /*****************************************************************************/
@@ -1115,26 +1275,28 @@ void PopPrivateClassContext()
 
 /*****************************************************************************/
 
-void NewPersistentContext(char *name, unsigned int ttl_minutes, enum statepolicy policy)
+void NewPersistentContext(char *unqualifiedname, char *namespace, unsigned int ttl_minutes, enum statepolicy policy)
 {
     CF_DB *dbp;
     CfState state;
     time_t now = time(NULL);
-
+    char name[CF_BUFSIZE];
 
     if (!OpenDB(&dbp, dbid_state))
     {
         return;
     }
 
+    snprintf(name, CF_BUFSIZE, "%s%c%s", namespace, CF_NS, unqualifiedname);
+    
     if (ReadDB(dbp, name, &state, sizeof(state)))
     {
         if (state.policy == cfpreserve)
         {
             if (now < state.expires)
             {
-                CfOut(cf_verbose, "", " -> Persisent state %s is already in a preserved state --  %ld minutes to go\n",
-                      name, (state.expires - now) / 60);
+                CfOut(cf_verbose, "", " -> Persisent state %s is already in a preserved state --  %jd minutes to go\n",
+                      name, (intmax_t)((state.expires - now) / 60));
                 CloseDB(dbp);
                 return;
             }
@@ -1154,7 +1316,7 @@ void NewPersistentContext(char *name, unsigned int ttl_minutes, enum statepolicy
 
 /*****************************************************************************/
 
-void DeletePersistentContext(char *name)
+void DeletePersistentContext(const char *name)
 {
     CF_DB *dbp;
 
@@ -1213,9 +1375,20 @@ void LoadPersistentContext()
         }
         else
         {
-            CfOut(cf_verbose, "", " Persistent class %s for %ld more minutes\n", key, (q.expires - now) / 60);
+            CfOut(cf_verbose, "", " Persistent class %s for %jd more minutes\n", key, (intmax_t)((q.expires - now) / 60));
             CfOut(cf_verbose, "", " Adding persistent class %s to heap\n", key);
-            NewClass(key);
+            if (strchr(key, CF_NS))
+               {
+               char namespace[CF_MAXVARSIZE], name[CF_MAXVARSIZE];
+               namespace[0] = '\0';
+               name[0] = '\0';
+               sscanf(key, "%[^:]:%[^\n]", namespace, name);
+               NewClass(name, namespace);
+               }
+            else
+               {
+               NewClass(key, NULL);
+               }
         }
     }
 
@@ -1227,22 +1400,20 @@ void LoadPersistentContext()
 
 /*****************************************************************************/
 
-void AddEphemeralClasses(Rlist *classlist)
+void AddEphemeralClasses(const Rlist *classlist, const char *namespace)
 {
-    Rlist *rp;
-
-    for (rp = classlist; rp != NULL; rp = rp->next)
+    for (const Rlist *rp = classlist; rp != NULL; rp = rp->next)
     {
         if (!InAlphaList(&VHEAP, rp->item))
         {
-            NewClass(rp->item);
+            NewClass(rp->item, namespace);
         }
     }
 }
 
 /*********************************************************************/
 
-void NewClassesFromString(char *classlist)
+void NewClassesFromString(const char *classlist)
 {
     char *sp, currentitem[CF_MAXVARSIZE], local[CF_MAXVARSIZE];
 
@@ -1267,13 +1438,13 @@ void NewClassesFromString(char *classlist)
             FatalError("cfengine: You cannot use -D to define a reserved class!");
         }
 
-        NewClass(currentitem);
+        NewClass(currentitem, NULL);
     }
 }
 
 /*********************************************************************/
 
-void NegateClassesFromString(char *classlist)
+void NegateClassesFromString(const char *classlist)
 {
     char *sp, currentitem[CF_MAXVARSIZE], local[CF_MAXVARSIZE];
 
@@ -1304,61 +1475,22 @@ void NegateClassesFromString(char *classlist)
 
 /*********************************************************************/
 
-bool IsSoftClass(char *sp)
+bool IsSoftClass(const char *sp)
 {
     return !IsHardClass(sp);
 }
 
 /*********************************************************************/
 
-bool IsHardClass(char *sp)
-// FIXME: this is very ad-hoc and incorrect
+bool IsHardClass(const char *sp)
+
 {
-    int i;
-
-    char *names[] =
-{
-        "any", "agent", "SuSE", "suse", "fedora", "redhat", "ubuntu", "windows", "lsb_compliant", "localhost",
-        "32_bit", "64_bit",
-        NULL
-    };
-
-    char *prefixes[] =
-{
-        "cfengine_", "ipv4",
-        NULL
-    };
-
-    for (i = 2; CLASSTEXT[i] != '\0'; i++)
-    {
-        if (strcmp(CLASSTEXT[i], sp) == 0)
-        {
-            return true;
-        }
-    }
-
-    for (i = 0; names[i] != NULL; i++)
-    {
-        if (strcmp(names[i], sp) == 0)
-        {
-            return true;
-        }
-    }
-
-    for (i = 0; prefixes[i] != NULL; i++)
-    {
-        if (strncmp(prefixes[i], sp, strlen(prefixes[i])) == 0)
-        {
-            return true;
-        }
-    }
-
-    return IsTimeClass(sp);
+    return InAlphaList(&VHARDHEAP, sp);
 }
 
 /***************************************************************************/
 
-bool IsTimeClass(char *sp)
+bool IsTimeClass(const char *sp)
 {
 
     if (IsStrIn(sp, DAY_TEXT))
@@ -1376,22 +1508,22 @@ bool IsTimeClass(char *sp)
         return true;
     }
 
-    if (strncmp(sp, "Min", 3) == 0 && isdigit(*(sp + 3)))
+    if (strncmp(sp, "Min", 3) == 0 && isdigit((int)*(sp + 3)))
     {
         return true;
     }
 
-    if (strncmp(sp, "Hr", 2) == 0 && isdigit(*(sp + 2)))
+    if (strncmp(sp, "Hr", 2) == 0 && isdigit((int)*(sp + 2)))
     {
         return true;
     }
 
-    if (strncmp(sp, "Yr", 2) == 0 && isdigit(*(sp + 2)))
+    if (strncmp(sp, "Yr", 2) == 0 && isdigit((int)*(sp + 2)))
     {
         return true;
     }
 
-    if (strncmp(sp, "Day", 3) == 0 && isdigit(*(sp + 3)))
+    if (strncmp(sp, "Day", 3) == 0 && isdigit((int)*(sp + 3)))
     {
         return true;
     }
@@ -1453,7 +1585,7 @@ int VarClassExcluded(Promise *pp, char **classes)
         return true;
     }
 
-    if (*classes && IsDefinedClass(*classes))
+    if (*classes && IsDefinedClass(*classes, pp->namespace))
     {
         return false;
     }
@@ -1473,24 +1605,26 @@ void SaveClassEnvironment()
         FILE *fp;
 
         snprintf(file, CF_BUFSIZE, "%s/state/allclasses.txt", CFWORKDIR);
-
         if ((fp = fopen(file, "w")) == NULL)
         {
             CfOut(cf_inform, "", "Could not open allclasses cache file");
             return;
         }
 
-        ListAlphaList(fp, VHEAP, '\n');
-        ListAlphaList(fp, VADDCLASSES, '\n');
-        fclose(fp);
+        Writer *writer = FileWriter(fp);
+
+        ListAlphaList(writer, VHARDHEAP, '\n');
+        ListAlphaList(writer, VHEAP, '\n');
+        ListAlphaList(writer, VADDCLASSES, '\n');
+
+        WriterClose(writer);
     }
 }
 
 /**********************************************************************/
 
-void DeleteAllClasses(Rlist *list)
+void DeleteAllClasses(const Rlist *list)
 {
-    Rlist *rp;
     char *string;
 
     if (list == NULL)
@@ -1498,7 +1632,7 @@ void DeleteAllClasses(Rlist *list)
         return;
     }
 
-    for (rp = list; rp != NULL; rp = rp->next)
+    for (const Rlist *rp = list; rp != NULL; rp = rp->next)
     {
         if (!CheckParseClass("class cancellation", (char *) rp->item, CF_IDRANGE))
         {
@@ -1523,16 +1657,14 @@ void DeleteAllClasses(Rlist *list)
 
 /*****************************************************************************/
 
-void AddAllClasses(Rlist *list, int persist, enum statepolicy policy)
+void AddAllClasses(char *namespace, const Rlist *list, int persist, enum statepolicy policy)
 {
-    Rlist *rp;
-
     if (list == NULL)
     {
         return;
     }
 
-    for (rp = list; rp != NULL; rp = rp->next)
+    for (const Rlist *rp = list; rp != NULL; rp = rp->next)
     {
         char *classname = xstrdup(rp->item);
 
@@ -1546,19 +1678,20 @@ void AddAllClasses(Rlist *list, int persist, enum statepolicy policy)
         if (persist > 0)
         {
             CfOut(cf_verbose, "", " ?> defining persistent promise result class %s\n", classname);
-            NewPersistentContext(CanonifyName(rp->item), persist, policy);
+            NewPersistentContext(CanonifyName(rp->item), namespace, persist, policy);
         }
         else
         {
             CfOut(cf_verbose, "", " ?> defining promise result class %s\n", classname);
         }
-        IdempPrependAlphaList(&VHEAP, classname);
+
+        NewClass(classname, namespace);
     }
 }
 
 /*****************************************************************************/
 
-void ListAlphaList(FILE *fout, AlphaList al, char sep)
+void ListAlphaList(Writer *writer, AlphaList al, char sep)
 {
     AlphaListIterator i = AlphaListIteratorInit(&al);
 
@@ -1566,7 +1699,7 @@ void ListAlphaList(FILE *fout, AlphaList al, char sep)
     {
         if (!IsItemIn(VNEGHEAP, ip->name))
         {
-            fprintf(fout, "%s%c", ip->name, sep);
+            WriterWriteF(writer, "%s%c", ip->name, sep);
         }
     }
 }
@@ -1580,3 +1713,64 @@ void AddAbortClass(const char *name, const char *classes)
         AppendItem(&ABORTHEAP, name, classes);
     }
 }
+
+/*****************************************************************************/
+
+void MarkPromiseHandleDone(const Promise *pp)
+{
+    if (pp == NULL)
+    {
+        return;
+    }
+
+    char name[CF_BUFSIZE];
+    char *handle = GetConstraintValue("handle", pp, CF_SCALAR);
+
+    if (handle == NULL)
+    {
+       return;
+    }
+    
+    snprintf(name, CF_BUFSIZE, "%s:%s", pp->namespace, handle);
+    IdempPrependAlphaList(&VHANDLES, name);
+
+}
+
+/*****************************************************************************/
+
+int MissingDependencies(const Promise *pp)
+{
+    if (pp == NULL)
+    {
+        return false;
+    }
+
+    char name[CF_BUFSIZE], *d;
+    Rlist *rp, *deps = GetListConstraint("depends_on", pp);
+    
+    for (rp = deps; rp != NULL; rp = rp->next)
+       {
+       if (strchr(rp->item, ':'))
+          {
+          d = (char *)rp->item;
+          }
+       else
+          {
+          snprintf(name, CF_BUFSIZE, "%s:%s", pp->namespace, (char *)rp->item);
+          d = name;
+          }
+
+       if (!InAlphaList(&VHANDLES, d))
+          {
+          CfOut(cf_verbose, "", "\n");
+          CfOut(cf_verbose, "", ". . . . . . . . . . . . . . . . . . . . . . . . . . . . \n");
+          CfOut(cf_verbose, "", "Skipping whole next promise (%s), as promise dependency %s has not yet been kept\n", pp->promiser, d);
+          CfOut(cf_verbose, "", ". . . . . . . . . . . . . . . . . . . . . . . . . . . . \n");
+
+          return true;
+          }
+       }
+
+    return false;
+}
+

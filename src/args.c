@@ -23,8 +23,15 @@
 
 */
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "args.h"
+
+#include "promises.h"
+#include "syntax.h"
+#include "reporting.h"
+#include "expand.h"
+#include "unix.h"
+#include "cfstream.h"
+#include "fncall.h"
 
 /******************************************************************/
 /* Argument propagation                                           */
@@ -48,9 +55,10 @@ leads to Hash Association (lval,rval) => (user,"$(person)")
 
 /******************************************************************/
 
-int MapBodyArgs(char *scopeid, Rlist *give, Rlist *take)
+int MapBodyArgs(const char *scopeid, Rlist *give, const Rlist *take)
 {
-    Rlist *rpg, *rpt;
+    Rlist *rpg = NULL;
+    const Rlist *rpt = NULL;
     FnCall *fp;
     enum cfdatatype dtg = cf_notype, dtt = cf_notype;
     char *lval;
@@ -101,7 +109,7 @@ int MapBodyArgs(char *scopeid, Rlist *give, Rlist *take)
             dtg = FunctionReturnType(fp->name);
             FnCallResult res = EvaluateFunctionCall(fp, NULL);
 
-            if (res.status == FNCALL_FAILURE && THIS_AGENT_TYPE != cf_common)
+            if (res.status == FNCALL_FAILURE && THIS_AGENT_TYPE != AGENT_TYPE_COMMON)
             {
                 // Unresolved variables
                 if (VERBOSE)
@@ -139,11 +147,11 @@ int MapBodyArgs(char *scopeid, Rlist *give, Rlist *take)
 
 /******************************************************************/
 
-Rlist *NewExpArgs(FnCall *fp, Promise *pp)
+Rlist *NewExpArgs(const FnCall *fp, const Promise *pp)
 {
     int len;
     Rval rval;
-    Rlist *rp, *newargs = NULL;
+    Rlist *newargs = NULL;
     FnCall *subfp;
     const FnCallType *fn = FindFunction(fp->name);
 
@@ -160,7 +168,7 @@ Rlist *NewExpArgs(FnCall *fp, Promise *pp)
         }
     }
 
-    for (rp = fp->args; rp != NULL; rp = rp->next)
+    for (const Rlist *rp = fp->args; rp != NULL; rp = rp->next)
     {
         switch (rp->type)
         {

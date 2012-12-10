@@ -23,14 +23,16 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: files_select.c                                                      */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "env_context.h"
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "promises.h"
+#include "matching.h"
+#include "cfstream.h"
+#include "string_lib.h"
+#include "pipes.h"
 
 static int SelectTypeMatch(struct stat *lstatptr, Rlist *crit);
 static int SelectOwnerMatch(char *path, struct stat *lstatptr, Rlist *crit);
@@ -47,7 +49,6 @@ static int SelectSizeMatch(size_t size, size_t min, size_t max);
 static int SelectBSDMatch(struct stat *lstatptr, Rlist *bsdflags, Promise *pp);
 #endif
 #ifndef MINGW
-static int Unix_GetOwnerName(struct stat *lstatptr, char *owner, int ownerSz);
 static int SelectGroupMatch(struct stat *lstatptr, Rlist *crit);
 #endif
 
@@ -116,7 +117,7 @@ int SelectLeaf(char *path, struct stat *sb, Attributes attr, Promise *pp)
         PrependAlphaList(&leaf_attr, "file_types");
     }
 
-    if (attr.select.owners && SelectOwnerMatch(path, sb, attr.select.owners))
+    if ((attr.select.owners) && (SelectOwnerMatch(path, sb, attr.select.owners)))
     {
         PrependAlphaList(&leaf_attr, "owner");
     }
@@ -130,7 +131,7 @@ int SelectLeaf(char *path, struct stat *sb, Attributes attr, Promise *pp)
     PrependAlphaList(&leaf_attr, "group");
 
 #else /* NOT MINGW */
-    if (attr.select.groups && SelectGroupMatch(sb, attr.select.groups))
+    if ((attr.select.groups) && (SelectGroupMatch(sb, attr.select.groups)))
     {
         PrependAlphaList(&leaf_attr, "group");
     }
@@ -173,25 +174,22 @@ int SelectLeaf(char *path, struct stat *sb, Attributes attr, Promise *pp)
         PrependAlphaList(&leaf_attr, "mtime");
     }
 
-    if (attr.select.issymlinkto && SelectIsSymLinkTo(path, attr.select.issymlinkto))
+    if ((attr.select.issymlinkto) && (SelectIsSymLinkTo(path, attr.select.issymlinkto)))
     {
         PrependAlphaList(&leaf_attr, "issymlinkto");
     }
 
-    if (attr.select.exec_regex && SelectExecRegexMatch(path, attr.select.exec_regex, attr.select.exec_program))
+    if ((attr.select.exec_regex) && (SelectExecRegexMatch(path, attr.select.exec_regex, attr.select.exec_program)))
     {
         PrependAlphaList(&leaf_attr, "exec_regex");
     }
 
-    if (attr.select.exec_program && SelectExecProgram(path, attr.select.exec_program))
+    if ((attr.select.exec_program) && (SelectExecProgram(path, attr.select.exec_program)))
     {
         PrependAlphaList(&leaf_attr, "exec_program");
     }
 
-    if ((result = EvalFileResult(attr.select.result, &leaf_attr)))
-    {
-        //NewClassesFromString(fp->defines);
-    }
+    result = EvalFileResult(attr.select.result, &leaf_attr);
 
     CfDebug("Select result \"%s\"on %s was %d\n", attr.select.result, path, result);
 
@@ -206,7 +204,7 @@ int SelectLeaf(char *path, struct stat *sb, Attributes attr, Promise *pp)
 
 static int SelectSizeMatch(size_t size, size_t min, size_t max)
 {
-    if (size <= max && size >= min)
+    if ((size <= max) && (size >= min))
     {
         return true;
     }
@@ -281,34 +279,18 @@ static int SelectTypeMatch(struct stat *lstatptr, Rlist *crit)
     return false;
 }
 
-/*******************************************************************/
-
-/* Writes the owner of file 'path', with stat 'lstatptr' into buffer 'owner' of
- * size 'ownerSz'. Returns true on success, false otherwise                      */
-
-int GetOwnerName(char *path, struct stat *lstatptr, char *owner, int ownerSz)
-{
-#ifdef MINGW
-    return NovaWin_GetOwnerName(path, owner, ownerSz);
-#else /* NOT MINGW */
-    return Unix_GetOwnerName(lstatptr, owner, ownerSz);
-#endif /* NOT MINGW */
-}
-
-/*******************************************************************/
-
 static int SelectOwnerMatch(char *path, struct stat *lstatptr, Rlist *crit)
 {
     AlphaList leafattrib;
     Rlist *rp;
     char ownerName[CF_BUFSIZE];
     int gotOwner;
-    char buffer[CF_SMALLBUF];
 
     InitAlphaList(&leafattrib);
 
 #ifndef MINGW                   // no uids on Windows
-    sprintf(buffer, "%jd", (uintmax_t) lstatptr->st_uid);
+    char buffer[CF_SMALLBUF];
+    snprintf(buffer, CF_SMALLBUF, "%jd", (uintmax_t) lstatptr->st_uid);
     PrependAlphaList(&leafattrib, buffer);
 #endif /* MINGW */
 
@@ -332,7 +314,7 @@ static int SelectOwnerMatch(char *path, struct stat *lstatptr, Rlist *crit)
             return true;
         }
 
-        if (gotOwner && FullTextMatch((char *) rp->item, ownerName))
+        if (gotOwner && (FullTextMatch((char *) rp->item, ownerName)))
         {
             CfDebug(" - ? Select owner match\n");
             DeleteAlphaList(&leafattrib);
@@ -534,7 +516,7 @@ static int SelectExecProgram(char *filename, char *command)
 /* Unix implementations                                            */
 /*******************************************************************/
 
-static int Unix_GetOwnerName(struct stat *lstatptr, char *owner, int ownerSz)
+int GetOwnerName(char *path, struct stat *lstatptr, char *owner, int ownerSz)
 {
     struct passwd *pw;
 
@@ -564,7 +546,7 @@ static int SelectGroupMatch(struct stat *lstatptr, Rlist *crit)
 
     InitAlphaList(&leafattrib);
 
-    sprintf(buffer, "%jd", (uintmax_t) lstatptr->st_gid);
+    snprintf(buffer, CF_SMALLBUF, "%jd", (uintmax_t) lstatptr->st_gid);
     PrependAlphaList(&leafattrib, buffer);
 
     if ((gr = getgrgid(lstatptr->st_gid)) != NULL)
@@ -585,7 +567,7 @@ static int SelectGroupMatch(struct stat *lstatptr, Rlist *crit)
             return true;
         }
 
-        if (gr && FullTextMatch((char *) rp->item, gr->gr_name))
+        if (gr && (FullTextMatch((char *) rp->item, gr->gr_name)))
         {
             CfDebug(" - ? Select owner match\n");
             DeleteAlphaList(&leafattrib);

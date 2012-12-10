@@ -22,8 +22,12 @@
   included file COSL.txt.
 */
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "attributes.h"
+
+#include "promises.h"
+#include "constraints.h"
+#include "conversion.h"
+#include "cfstream.h"
 
 static void ShowAttributes(Attributes a);
 
@@ -40,7 +44,7 @@ void SetChecksumUpdates(bool enabled)
 
 /*******************************************************************/
 
-Attributes GetFilesAttributes(Promise *pp)
+Attributes GetFilesAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -60,7 +64,7 @@ Attributes GetFilesAttributes(Promise *pp)
     attr.template = (char *)GetConstraintValue("edit_template", pp, CF_SCALAR);
     attr.haveeditline = GetBundleConstraint("edit_line", pp);
     attr.haveeditxml = GetBundleConstraint("edit_xml", pp);
-    attr.haveedit = attr.haveeditline || attr.haveeditxml || attr.template;
+    attr.haveedit = (attr.haveeditline) || (attr.haveeditxml) || (attr.template);
 
 /* Files, specialist */
 
@@ -84,6 +88,7 @@ Attributes GetFilesAttributes(Promise *pp)
     if (attr.template)
        {
        attr.edits.empty_before_use = true;
+       attr.edits.inherit = true;
        }
 
 /* Files, multiple use */
@@ -102,22 +107,22 @@ Attributes GetFilesAttributes(Promise *pp)
         ShowAttributes(attr);
     }
 
-    if (attr.haverename || attr.havedelete || attr.haveperms || attr.havechange ||
-        attr.havecopy || attr.havelink || attr.haveedit || attr.create || attr.touch ||
-        attr.transformer || attr.acl.acl_entries)
+    if ((attr.haverename) || (attr.havedelete) || (attr.haveperms) || (attr.havechange) ||
+        (attr.havecopy) || (attr.havelink) || (attr.haveedit) || (attr.create) || (attr.touch) ||
+        (attr.transformer) || (attr.acl.acl_entries))
     {
     }
     else
     {
-        if (THIS_AGENT_TYPE == cf_common)
+        if (THIS_AGENT_TYPE == AGENT_TYPE_COMMON)
         {
             cfPS(cf_error, CF_WARN, "", pp, attr, " !! files promise makes no intention about system state");
         }
     }
 
-    if ((THIS_AGENT_TYPE == cf_common) && attr.create && attr.havecopy)
+    if ((THIS_AGENT_TYPE == AGENT_TYPE_COMMON) && (attr.create) && (attr.havecopy))
     {
-        if (attr.copy.compare != cfa_checksum && attr.copy.compare != cfa_hash)
+        if (((attr.copy.compare) != (cfa_checksum)) && ((attr.copy.compare) != cfa_hash))
         {
             CfOut(cf_error, "",
                   " !! Promise constraint conflicts - %s file will never be copied as created file is always newer",
@@ -132,7 +137,7 @@ Attributes GetFilesAttributes(Promise *pp)
         }
     }
 
-    if ((THIS_AGENT_TYPE == cf_common) && attr.create && attr.havelink)
+    if ((THIS_AGENT_TYPE == AGENT_TYPE_COMMON) && (attr.create) && (attr.havelink))
     {
         CfOut(cf_error, "", " !! Promise constraint conflicts - %s cannot be created and linked at the same time",
               pp->promiser);
@@ -144,7 +149,7 @@ Attributes GetFilesAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetOutputsAttributes(Promise *pp)
+Attributes GetOutputsAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -158,7 +163,7 @@ Attributes GetOutputsAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetReportsAttributes(Promise *pp)
+Attributes GetReportsAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -171,7 +176,7 @@ Attributes GetReportsAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetEnvironmentsAttributes(Promise *pp)
+Attributes GetEnvironmentsAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -184,7 +189,7 @@ Attributes GetEnvironmentsAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetServicesAttributes(Promise *pp)
+Attributes GetServicesAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -198,7 +203,7 @@ Attributes GetServicesAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetPackageAttributes(Promise *pp)
+Attributes GetPackageAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -210,7 +215,7 @@ Attributes GetPackageAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetDatabaseAttributes(Promise *pp)
+Attributes GetDatabaseAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -222,7 +227,7 @@ Attributes GetDatabaseAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetClassContextAttributes(Promise *pp)
+Attributes GetClassContextAttributes(const Promise *pp)
 {
     Attributes a = { {0} };;
 
@@ -235,7 +240,7 @@ Attributes GetClassContextAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetExecAttributes(Promise *pp)
+Attributes GetExecAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -258,7 +263,7 @@ Attributes GetExecAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetProcessAttributes(Promise *pp)
+Attributes GetProcessAttributes(const Promise *pp)
 {
     static Attributes attr = { {0} };
 
@@ -284,7 +289,7 @@ Attributes GetProcessAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetStorageAttributes(Promise *pp)
+Attributes GetStorageAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -311,11 +316,13 @@ Attributes GetStorageAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetMethodAttributes(Promise *pp)
+Attributes GetMethodAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
     attr.havebundle = GetBundleConstraint("usebundle", pp);
+
+    attr.inherit = GetBooleanConstraint("inherit", pp);
 
 /* Common ("included") */
 
@@ -330,7 +337,7 @@ Attributes GetMethodAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetInterfacesAttributes(Promise *pp)
+Attributes GetInterfacesAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -350,7 +357,7 @@ Attributes GetInterfacesAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetTopicsAttributes(Promise *pp)
+Attributes GetTopicsAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -364,258 +371,7 @@ Attributes GetTopicsAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetThingsAttributes(Promise *pp)
-{
-    Attributes attr = { {0} };
-    Rlist *rp;
-    char *cert = GetConstraintValue("certainty", pp, CF_SCALAR);
-    enum knowledgecertainty certainty;
-
-    attr.synonyms = GetListConstraint("synonyms", pp);
-    attr.general = GetListConstraint("generalizations", pp);
-
-    if (cert && strcmp(cert, "possible") == 0)
-    {
-        certainty = cfk_possible;
-    }
-    else if (cert && strcmp(cert, "uncertain") == 0)
-    {
-        certainty = cfk_uncertain;
-    }
-    else
-    {
-        certainty = cfk_certain;
-    }
-
-// Select predefined physics
-
-    if ((rp = GetListConstraint("is_part_of", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_PARTOF_CERT_F;
-            attr.bwd_name = KM_PARTOF_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_PARTOF_UNCERT_F;
-            attr.bwd_name = KM_PARTOF_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_PARTOF_POSS_F;
-            attr.bwd_name = KM_PARTOF_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("determines", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_DETERMINES_CERT_F;
-            attr.bwd_name = KM_DETERMINES_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_DETERMINES_UNCERT_F;
-            attr.bwd_name = KM_DETERMINES_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_DETERMINES_POSS_F;
-            attr.bwd_name = KM_DETERMINES_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("is_connected_to", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_CONNECTS_CERT_F;
-            attr.bwd_name = KM_CONNECTS_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_CONNECTS_UNCERT_F;
-            attr.bwd_name = KM_CONNECTS_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_CONNECTS_POSS_F;
-            attr.bwd_name = KM_CONNECTS_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("uses", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_USES_CERT_F;
-            attr.bwd_name = KM_USES_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_USES_UNCERT_F;
-            attr.bwd_name = KM_USES_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_USES_POSS_F;
-            attr.bwd_name = KM_USES_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("provides", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_PROVIDES_CERT_F;
-            attr.bwd_name = KM_PROVIDES_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_PROVIDES_UNCERT_F;
-            attr.bwd_name = KM_PROVIDES_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_PROVIDES_POSS_F;
-            attr.bwd_name = KM_PROVIDES_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("belongs_to", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_BELONGS_CERT_F;
-            attr.bwd_name = KM_BELONGS_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_BELONGS_UNCERT_F;
-            attr.bwd_name = KM_BELONGS_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_BELONGS_POSS_F;
-            attr.bwd_name = KM_BELONGS_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("affects", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_AFFECTS_CERT_F;
-            attr.bwd_name = KM_AFFECTS_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_AFFECTS_UNCERT_F;
-            attr.bwd_name = KM_AFFECTS_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_AFFECTS_POSS_F;
-            attr.bwd_name = KM_AFFECTS_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("causes", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_CAUSE_CERT_F;
-            attr.bwd_name = KM_CAUSE_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_CAUSE_UNCERT_F;
-            attr.bwd_name = KM_CAUSE_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_CAUSE_POSS_F;
-            attr.bwd_name = KM_CAUSE_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("caused_by", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.bwd_name = KM_CAUSE_CERT_F;
-            attr.fwd_name = KM_CAUSE_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.bwd_name = KM_CAUSE_UNCERT_F;
-            attr.fwd_name = KM_CAUSE_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.bwd_name = KM_CAUSE_POSS_F;
-            attr.fwd_name = KM_CAUSE_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("needs", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_NEEDS_CERT_F;
-            attr.bwd_name = KM_NEEDS_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_NEEDS_UNCERT_F;
-            attr.bwd_name = KM_NEEDS_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_NEEDS_POSS_F;
-            attr.bwd_name = KM_NEEDS_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-    else if ((rp = GetListConstraint("is_located_in", pp)))
-    {
-        switch (certainty)
-        {
-        case cfk_certain:
-            attr.fwd_name = KM_LOCATED_CERT_F;
-            attr.bwd_name = KM_LOCATED_CERT_B;
-            break;
-        case cfk_uncertain:
-            attr.fwd_name = KM_LOCATED_UNCERT_F;
-            attr.bwd_name = KM_LOCATED_UNCERT_B;
-            break;
-        case cfk_possible:
-            attr.fwd_name = KM_LOCATED_POSS_F;
-            attr.bwd_name = KM_LOCATED_POSS_B;
-            break;
-        }
-
-        attr.associates = rp;
-    }
-
-    return attr;
-}
-
-/*******************************************************************/
-
-Attributes GetInferencesAttributes(Promise *pp)
+Attributes GetInferencesAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -626,7 +382,7 @@ Attributes GetInferencesAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetOccurrenceAttributes(Promise *pp)
+Attributes GetOccurrenceAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -638,7 +394,7 @@ Attributes GetOccurrenceAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetMeasurementAttributes(Promise *pp)
+Attributes GetMeasurementAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -659,7 +415,7 @@ Attributes GetMeasurementAttributes(Promise *pp)
 /* Level                                                           */
 /*******************************************************************/
 
-Services GetServicesConstraints(Promise *pp)
+Services GetServicesConstraints(const Promise *pp)
 {
     Services s;
 
@@ -675,7 +431,7 @@ Services GetServicesConstraints(Promise *pp)
 
 /*******************************************************************/
 
-Environments GetEnvironmentsConstraints(Promise *pp)
+Environments GetEnvironmentsConstraints(const Promise *pp)
 {
     Environments e;
 
@@ -696,7 +452,7 @@ Environments GetEnvironmentsConstraints(Promise *pp)
 
 /*******************************************************************/
 
-ExecContain GetExecContainConstraints(Promise *pp)
+ExecContain GetExecContainConstraints(const Promise *pp)
 {
     ExecContain e;
 
@@ -715,7 +471,7 @@ ExecContain GetExecContainConstraints(Promise *pp)
 
 /*******************************************************************/
 
-Recursion GetRecursionConstraints(Promise *pp)
+Recursion GetRecursionConstraints(const Promise *pp)
 {
     Recursion r;
 
@@ -737,7 +493,7 @@ Recursion GetRecursionConstraints(Promise *pp)
 
 /*******************************************************************/
 
-Acl GetAclConstraints(Promise *pp)
+Acl GetAclConstraints(const Promise *pp)
 {
     Acl ac;
 
@@ -751,7 +507,7 @@ Acl GetAclConstraints(Promise *pp)
 
 /*******************************************************************/
 
-FilePerms GetPermissionConstraints(Promise *pp)
+FilePerms GetPermissionConstraints(const Promise *pp)
 {
     FilePerms p;
     char *value;
@@ -773,14 +529,14 @@ FilePerms GetPermissionConstraints(Promise *pp)
     p.plus_flags = 0;
     p.minus_flags = 0;
 
-    if (list && !ParseFlagString(list, &p.plus_flags, &p.minus_flags))
+    if (list && (!ParseFlagString(list, &p.plus_flags, &p.minus_flags)))
     {
         CfOut(cf_error, "", "Problem validating a BSD flag string");
         PromiseRef(cf_error, pp);
     }
 
 #ifdef MINGW
-    p.owners = NovaWin_Rlist2SidList((Rlist *) GetConstraintValue("owners", pp, CF_LIST), pp);
+    p.owners = NovaWin_Rlist2SidList((Rlist *) GetConstraintValue("owners", pp, CF_LIST));
 #else /* NOT MINGW */
     p.owners = Rlist2UidList((Rlist *) GetConstraintValue("owners", pp, CF_LIST), pp);
     p.groups = Rlist2GidList((Rlist *) GetConstraintValue("groups", pp, CF_LIST), pp);
@@ -801,7 +557,7 @@ FilePerms GetPermissionConstraints(Promise *pp)
 
 /*******************************************************************/
 
-FileSelect GetSelectConstraints(Promise *pp)
+FileSelect GetSelectConstraints(const Promise *pp)
 {
     FileSelect s;
     char *value;
@@ -841,7 +597,7 @@ FileSelect GetSelectConstraints(Promise *pp)
         PromiseRef(cf_error, pp);
     }
 
-    if (s.name || s.path || s.filetypes || s.issymlinkto || s.perms || s.bsdflags)
+    if ((s.name) || (s.path) || (s.filetypes) || (s.issymlinkto) || (s.perms) || (s.bsdflags))
     {
         entries = true;
     }
@@ -881,7 +637,7 @@ FileSelect GetSelectConstraints(Promise *pp)
     s.exec_regex = (char *) GetConstraintValue("exec_regex", pp, CF_SCALAR);
     s.exec_program = (char *) GetConstraintValue("exec_program", pp, CF_SCALAR);
 
-    if (s.owners || s.min_size || s.exec_regex || s.exec_program)
+    if ((s.owners) || (s.min_size) || (s.exec_regex) || (s.exec_program))
     {
         entries = true;
     }
@@ -899,7 +655,7 @@ FileSelect GetSelectConstraints(Promise *pp)
 
 /*******************************************************************/
 
-TransactionContext GetTransactionConstraints(Promise *pp)
+TransactionContext GetTransactionConstraints(const Promise *pp)
 {
     TransactionContext t;
     char *value;
@@ -966,7 +722,7 @@ TransactionContext GetTransactionConstraints(Promise *pp)
 
 /*******************************************************************/
 
-DefineClasses GetClassDefinitionConstraints(Promise *pp)
+DefineClasses GetClassDefinitionConstraints(const Promise *pp)
 {
     DefineClasses c;
     char *pt = NULL;
@@ -995,7 +751,7 @@ DefineClasses GetClassDefinitionConstraints(Promise *pp)
 
     pt = GetConstraintValue("timer_policy", pp, CF_SCALAR);
 
-    if (pt && strncmp(pt, "abs", 3) == 0)
+    if (pt && (strncmp(pt, "abs", 3) == 0))
     {
         c.timer = cfpreserve;
     }
@@ -1009,14 +765,14 @@ DefineClasses GetClassDefinitionConstraints(Promise *pp)
 
 /*******************************************************************/
 
-FileDelete GetDeleteConstraints(Promise *pp)
+FileDelete GetDeleteConstraints(const Promise *pp)
 {
     FileDelete f;
     char *value;
 
     value = (char *) GetConstraintValue("dirlinks", pp, CF_SCALAR);
 
-    if (value && strcmp(value, "keep") == 0)
+    if (value && (strcmp(value, "keep") == 0))
     {
         f.dirlinks = cfa_linkkeep;
     }
@@ -1031,7 +787,7 @@ FileDelete GetDeleteConstraints(Promise *pp)
 
 /*******************************************************************/
 
-FileRename GetRenameConstraints(Promise *pp)
+FileRename GetRenameConstraints(const Promise *pp)
 {
     FileRename r;
     char *value;
@@ -1054,14 +810,14 @@ FileRename GetRenameConstraints(Promise *pp)
 
 /*******************************************************************/
 
-FileChange GetChangeMgtConstraints(Promise *pp)
+FileChange GetChangeMgtConstraints(const Promise *pp)
 {
     FileChange c;
     char *value;
 
     value = (char *) GetConstraintValue("hash", pp, CF_SCALAR);
 
-    if (value && strcmp(value, "best") == 0)
+    if (value && (strcmp(value, "best") == 0))
     {
 #ifdef HAVE_NOVA
         c.hash = cf_sha512;
@@ -1069,23 +825,23 @@ FileChange GetChangeMgtConstraints(Promise *pp)
         c.hash = cf_besthash;
 #endif
     }
-    else if (value && strcmp(value, "md5") == 0)
+    else if (value && (strcmp(value, "md5") == 0))
     {
         c.hash = cf_md5;
     }
-    else if (value && strcmp(value, "sha1") == 0)
+    else if (value && (strcmp(value, "sha1") == 0))
     {
         c.hash = cf_sha1;
     }
-    else if (value && strcmp(value, "sha256") == 0)
+    else if (value && (strcmp(value, "sha256") == 0))
     {
         c.hash = cf_sha256;
     }
-    else if (value && strcmp(value, "sha384") == 0)
+    else if (value && (strcmp(value, "sha384") == 0))
     {
         c.hash = cf_sha384;
     }
-    else if (value && strcmp(value, "sha512") == 0)
+    else if (value && (strcmp(value, "sha512") == 0))
     {
         c.hash = cf_sha512;
     }
@@ -1094,7 +850,7 @@ FileChange GetChangeMgtConstraints(Promise *pp)
         c.hash = CF_DEFAULT_DIGEST;
     }
 
-    if (FIPS_MODE && c.hash == cf_md5)
+    if (FIPS_MODE && (c.hash == cf_md5))
     {
         CfOut(cf_error, "", " !! FIPS mode is enabled, and md5 is not an approved algorithm");
         PromiseRef(cf_error, pp);
@@ -1102,15 +858,15 @@ FileChange GetChangeMgtConstraints(Promise *pp)
 
     value = (char *) GetConstraintValue("report_changes", pp, CF_SCALAR);
 
-    if (value && strcmp(value, "content") == 0)
+    if (value && (strcmp(value, "content") == 0))
     {
         c.report_changes = cfa_contentchange;
     }
-    else if (value && strcmp(value, "stats") == 0)
+    else if (value && (strcmp(value, "stats") == 0))
     {
         c.report_changes = cfa_statschange;
     }
-    else if (value && strcmp(value, "all") == 0)
+    else if (value && (strcmp(value, "all") == 0))
     {
         c.report_changes = cfa_allchanges;
     }
@@ -1134,7 +890,7 @@ FileChange GetChangeMgtConstraints(Promise *pp)
 
 /*******************************************************************/
 
-FileCopy GetCopyConstraints(Promise *pp)
+FileCopy GetCopyConstraints(const Promise *pp)
 {
     FileCopy f;
     char *value;
@@ -1162,11 +918,11 @@ FileCopy GetCopyConstraints(Promise *pp)
 
     value = (char *) GetConstraintValue("copy_backup", pp, CF_SCALAR);
 
-    if (value && strcmp(value, "false") == 0)
+    if (value && (strcmp(value, "false") == 0))
     {
         f.backup = cfa_nobackup;
     }
-    else if (value && strcmp(value, "timestamp") == 0)
+    else if (value && (strcmp(value, "timestamp") == 0))
     {
         f.backup = cfa_timestamp;
     }
@@ -1200,7 +956,7 @@ FileCopy GetCopyConstraints(Promise *pp)
 
 /*******************************************************************/
 
-FileLink GetLinkConstraints(Promise *pp)
+FileLink GetLinkConstraints(const Promise *pp)
 {
     FileLink f;
     char *value;
@@ -1212,11 +968,11 @@ FileLink GetLinkConstraints(Promise *pp)
 
     value = (char *) GetConstraintValue("when_no_source", pp, CF_SCALAR);
 
-    if (value && strcmp(value, "force") == 0)
+    if (value && (strcmp(value, "force") == 0))
     {
         f.when_no_file = cfa_force;
     }
-    else if (value && strcmp(value, "delete") == 0)
+    else if (value && (strcmp(value, "delete") == 0))
     {
         f.when_no_file = cfa_delete;
     }
@@ -1227,7 +983,7 @@ FileLink GetLinkConstraints(Promise *pp)
 
     value = (char *) GetConstraintValue("when_linking_children", pp, CF_SCALAR);
 
-    if (value && strcmp(value, "override_file") == 0)
+    if (value && (strcmp(value, "override_file") == 0))
     {
         f.when_linking_children = cfa_override;
     }
@@ -1243,29 +999,29 @@ FileLink GetLinkConstraints(Promise *pp)
 
 /*******************************************************************/
 
-EditDefaults GetEditDefaults(Promise *pp)
+EditDefaults GetEditDefaults(const Promise *pp)
 {
     EditDefaults e = { 0 };
     char *value;
 
     e.maxfilesize = GetIntConstraint("max_file_size", pp);
 
-    if (e.maxfilesize == CF_NOINT || e.maxfilesize == 0)
+    if ((e.maxfilesize == CF_NOINT) || (e.maxfilesize == 0))
     {
         e.maxfilesize = EDITFILESIZE;
     }
 
     value = (char *) GetConstraintValue("edit_backup", pp, CF_SCALAR);
 
-    if (value && strcmp(value, "false") == 0)
+    if (value && (strcmp(value, "false") == 0))
     {
         e.backup = cfa_nobackup;
     }
-    else if (value && strcmp(value, "timestamp") == 0)
+    else if (value && (strcmp(value, "timestamp") == 0))
     {
         e.backup = cfa_timestamp;
     }
-    else if (value && strcmp(value, "rotate") == 0)
+    else if (value && (strcmp(value, "rotate") == 0))
     {
         e.backup = cfa_rotate;
         e.rotate = GetIntConstraint("rotate", pp);
@@ -1279,14 +1035,16 @@ EditDefaults GetEditDefaults(Promise *pp)
 
     e.joinlines = GetBooleanConstraint("recognize_join", pp);
 
+    e.inherit = GetBooleanConstraint("inherit", pp);
+
     return e;
 }
 
 /*******************************************************************/
 
-Context GetContextConstraints(Promise *pp)
+ContextConstraint GetContextConstraints(const Promise *pp)
 {
-    Context a;
+    ContextConstraint a;
     Constraint *cp;
     int i;
 
@@ -1316,7 +1074,7 @@ Context GetContextConstraints(Promise *pp)
 
 /*******************************************************************/
 
-Packages GetPackageConstraints(Promise *pp)
+Packages GetPackageConstraints(const Promise *pp)
 {
     Packages p;
     enum package_actions action;
@@ -1342,6 +1100,8 @@ Packages GetPackageConstraints(Promise *pp)
     p.package_changes = change_policy;
 
     p.package_file_repositories = GetListConstraint("package_file_repositories", pp);
+
+    p.package_default_arch_command = (char *) GetConstraintValue("package_default_arch_command", pp, CF_SCALAR);
 
     p.package_patch_list_command = (char *) GetConstraintValue("package_patch_list_command", pp, CF_SCALAR);
     p.package_patch_name_regex = (char *) GetConstraintValue("package_patch_name_regex", pp, CF_SCALAR);
@@ -1370,16 +1130,29 @@ Packages GetPackageConstraints(Promise *pp)
     p.package_noverify_regex = (char *) GetConstraintValue("package_noverify_regex", pp, CF_SCALAR);
     p.package_noverify_returncode = GetIntConstraint("package_noverify_returncode", pp);
 
+    if (GetConstraint(pp, "package_commands_useshell") == NULL)
+    {
+        p.package_commands_useshell = true;
+    }
+    else
+    {
+        p.package_commands_useshell = GetBooleanConstraint("package_commands_useshell", pp);
+    }
+
     p.package_name_convention = (char *) GetConstraintValue("package_name_convention", pp, CF_SCALAR);
     p.package_delete_convention = (char *) GetConstraintValue("package_delete_convention", pp, CF_SCALAR);
 
     p.package_multiline_start = (char *) GetConstraintValue("package_multiline_start", pp, CF_SCALAR);
+
+    p.package_version_equal_command = GetConstraintValue("package_version_equal_command", pp, CF_SCALAR);
+    p.package_version_less_command = GetConstraintValue("package_version_less_command", pp, CF_SCALAR);
+
     return p;
 }
 
 /*******************************************************************/
 
-ProcessSelect GetProcessFilterConstraints(Promise *pp)
+ProcessSelect GetProcessFilterConstraints(const Promise *pp)
 {
     ProcessSelect p;
     char *value;
@@ -1460,7 +1233,7 @@ ProcessSelect GetProcessFilterConstraints(Promise *pp)
 
     IntRange2Int(value, &p.min_thread, &p.max_thread, pp);
 
-    if (p.owner || p.status || p.command || p.tty)
+    if ((p.owner) || (p.status) || (p.command) || (p.tty))
     {
         entries = true;
     }
@@ -1478,7 +1251,7 @@ ProcessSelect GetProcessFilterConstraints(Promise *pp)
 
 /*******************************************************************/
 
-ProcessCount GetMatchesConstraints(Promise *pp)
+ProcessCount GetMatchesConstraints(const Promise *pp)
 {
     ProcessCount p;
     char *value;
@@ -1528,19 +1301,6 @@ static void ShowAttributes(Attributes a)
     if (a.transformer)
         printf(" * transformer %s\n", a.transformer);
 
-/*
-if (a.perms) printf(" * perms %o\n",a.perms.mode);
-a.select = GetSelectConstraints(pp);
-a.delete = GetDeleteConstraints(pp);
-a.rename = GetRenameConstraints(pp);
-a.change = GetChangeMgtConstraints(pp);
-a.copy = GetCopyConstraints(pp);
-a.link = GetLinkConstraints(pp);
-a.recursion = GetRecursionConstraints(pp);
-
-a.transaction = GetTransactionConstraints(pp);
-a.classes = GetClassDefinitionConstraints(pp);
-*/
     printf(".....................................................\n\n");
 }
 
@@ -1548,7 +1308,7 @@ a.classes = GetClassDefinitionConstraints(pp);
 /* Edit sub-bundles have their own attributes                      */
 /*******************************************************************/
 
-Attributes GetInsertionAttributes(Promise *pp)
+Attributes GetInsertionAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -1568,6 +1328,8 @@ Attributes GetInsertionAttributes(Promise *pp)
     attr.haveregion = GetBooleanConstraint("select_region", pp);
     attr.region = GetRegionConstraints(pp);
 
+    attr.xml = GetXmlConstraints(pp);
+
     attr.havetrans = GetBooleanConstraint(CF_TRANSACTION, pp);
     attr.transaction = GetTransactionConstraints(pp);
 
@@ -1579,7 +1341,7 @@ Attributes GetInsertionAttributes(Promise *pp)
 
 /*******************************************************************/
 
-EditLocation GetLocationAttributes(Promise *pp)
+EditLocation GetLocationAttributes(const Promise *pp)
 {
     EditLocation e;
     char *value;
@@ -1588,7 +1350,7 @@ EditLocation GetLocationAttributes(Promise *pp)
 
     value = GetConstraintValue("before_after", pp, CF_SCALAR);
 
-    if (value && strcmp(value, "before") == 0)
+    if (value && (strcmp(value, "before") == 0))
     {
         e.before_after = cfe_before;
     }
@@ -1603,7 +1365,7 @@ EditLocation GetLocationAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetDeletionAttributes(Promise *pp)
+Attributes GetDeletionAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -1617,6 +1379,8 @@ Attributes GetDeletionAttributes(Promise *pp)
     attr.haveregion = GetBooleanConstraint("select_region", pp);
     attr.region = GetRegionConstraints(pp);
 
+    attr.xml = GetXmlConstraints(pp);
+
     attr.havetrans = GetBooleanConstraint(CF_TRANSACTION, pp);
     attr.transaction = GetTransactionConstraints(pp);
 
@@ -1628,7 +1392,7 @@ Attributes GetDeletionAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetColumnAttributes(Promise *pp)
+Attributes GetColumnAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -1651,7 +1415,7 @@ Attributes GetColumnAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Attributes GetReplaceAttributes(Promise *pp)
+Attributes GetReplaceAttributes(const Promise *pp)
 {
     Attributes attr = { {0} };
 
@@ -1665,6 +1429,8 @@ Attributes GetReplaceAttributes(Promise *pp)
     attr.haveregion = GetBooleanConstraint("select_region", pp);
     attr.region = GetRegionConstraints(pp);
 
+    attr.xml = GetXmlConstraints(pp);
+
     attr.havetrans = GetBooleanConstraint(CF_TRANSACTION, pp);
     attr.transaction = GetTransactionConstraints(pp);
 
@@ -1676,7 +1442,20 @@ Attributes GetReplaceAttributes(Promise *pp)
 
 /*******************************************************************/
 
-EditRegion GetRegionConstraints(Promise *pp)
+EditXml GetXmlConstraints(const Promise *pp)
+{
+    EditXml x;
+
+    x.havebuildxpath = ((x.build_xpath = GetConstraintValue("build_xpath", pp, CF_SCALAR)) != NULL);
+    x.haveselectxpath = ((x.select_xpath = GetConstraintValue("select_xpath", pp, CF_SCALAR)) != NULL);
+    x.haveattributevalue = ((x.attribute_value = GetConstraintValue("attribute_value", pp, CF_SCALAR)) != NULL);
+
+    return x;
+}
+
+/*******************************************************************/
+
+EditRegion GetRegionConstraints(const Promise *pp)
 {
     EditRegion e;
 
@@ -1689,7 +1468,7 @@ EditRegion GetRegionConstraints(Promise *pp)
 
 /*******************************************************************/
 
-EditReplace GetReplaceConstraints(Promise *pp)
+EditReplace GetReplaceConstraints(const Promise *pp)
 {
     EditReplace r;
 
@@ -1701,7 +1480,7 @@ EditReplace GetReplaceConstraints(Promise *pp)
 
 /*******************************************************************/
 
-EditColumn GetColumnConstraints(Promise *pp)
+EditColumn GetColumnConstraints(const Promise *pp)
 {
     EditColumn c;
     char *value;
@@ -1709,7 +1488,7 @@ EditColumn GetColumnConstraints(Promise *pp)
     c.column_separator = GetConstraintValue("field_separator", pp, CF_SCALAR);
     c.select_column = GetIntConstraint("select_field", pp);
 
-    if (c.select_column != CF_NOINT && GetBooleanConstraint("start_fields_from_zero", pp))
+    if (((c.select_column) != CF_NOINT) && (GetBooleanConstraint("start_fields_from_zero", pp)))
     {
         c.select_column++;
     }
@@ -1736,7 +1515,7 @@ EditColumn GetColumnConstraints(Promise *pp)
 /* Storage                                                         */
 /*******************************************************************/
 
-StorageMount GetMountConstraints(Promise *pp)
+StorageMount GetMountConstraints(const Promise *pp)
 {
     StorageMount m;
 
@@ -1752,7 +1531,7 @@ StorageMount GetMountConstraints(Promise *pp)
 
 /*******************************************************************/
 
-StorageVolume GetVolumeConstraints(Promise *pp)
+StorageVolume GetVolumeConstraints(const Promise *pp)
 {
     StorageVolume v;
     char *value;
@@ -1783,7 +1562,7 @@ StorageVolume GetVolumeConstraints(Promise *pp)
 
 /*******************************************************************/
 
-TcpIp GetTCPIPAttributes(Promise *pp)
+TcpIp GetTCPIPAttributes(const Promise *pp)
 {
     TcpIp t;
 
@@ -1795,10 +1574,12 @@ TcpIp GetTCPIPAttributes(Promise *pp)
 
 /*******************************************************************/
 
-Report GetReportConstraints(Promise *pp)
+Report GetReportConstraints(const Promise *pp)
 {
-    Report r;
-
+ Report r = {0};
+ 
+ r.result = GetConstraintValue("bundle_return_value_index", pp, CF_SCALAR);
+    
     if (GetConstraintValue("lastseen", pp, CF_SCALAR))
     {
         r.havelastseen = true;
@@ -1837,12 +1618,17 @@ Report GetReportConstraints(Promise *pp)
 
     r.to_file = GetConstraintValue("report_to_file", pp, CF_SCALAR);
 
+    if ((r.result) && ((r.haveprintfile) || (r.filename) || (r.showstate) || (r.to_file) || (r.lastseen)))
+    {
+        CfOut(cf_error, "", " !! bundle_return_value promise for \"%s\" in bundle \"%s\" with too many constraints (ignored)", pp->promiser, pp->bundle);
+    }
+    
     return r;
 }
 
 /*******************************************************************/
 
-LineSelect GetInsertSelectConstraints(Promise *pp)
+LineSelect GetInsertSelectConstraints(const Promise *pp)
 {
     LineSelect s;
 
@@ -1858,7 +1644,7 @@ LineSelect GetInsertSelectConstraints(Promise *pp)
 
 /*******************************************************************/
 
-LineSelect GetDeleteSelectConstraints(Promise *pp)
+LineSelect GetDeleteSelectConstraints(const Promise *pp)
 {
     LineSelect s;
 
@@ -1874,7 +1660,7 @@ LineSelect GetDeleteSelectConstraints(Promise *pp)
 
 /*******************************************************************/
 
-Measurement GetMeasurementConstraint(Promise *pp)
+Measurement GetMeasurementConstraint(const Promise *pp)
 {
     Measurement m;
     char *value;
@@ -1892,7 +1678,8 @@ Measurement GetMeasurementConstraint(Promise *pp)
     m.history_type = GetConstraintValue("history_type", pp, CF_SCALAR);
     m.select_line_matching = GetConstraintValue("select_line_matching", pp, CF_SCALAR);
     m.select_line_number = GetIntConstraint("select_line_number", pp);
-
+    m.policy = MeasurePolicy2Value(GetConstraintValue("select_multiline_policy", pp, CF_SCALAR));
+    
     m.extraction_regex = GetConstraintValue("extraction_regex", pp, CF_SCALAR);
     m.units = GetConstraintValue("units", pp, CF_SCALAR);
     m.growing = GetBooleanConstraint("track_growing_file", pp);
@@ -1901,7 +1688,7 @@ Measurement GetMeasurementConstraint(Promise *pp)
 
 /*******************************************************************/
 
-Database GetDatabaseConstraints(Promise *pp)
+Database GetDatabaseConstraints(const Promise *pp)
 {
     Database d;
     char *value;
@@ -1920,7 +1707,7 @@ Database GetDatabaseConstraints(Promise *pp)
     value = GetConstraintValue("db_server_type", pp, CF_SCALAR);
     d.db_server_type = Str2dbType(value);
 
-    if (value && d.db_server_type == cfd_notype)
+    if (value && ((d.db_server_type) == cfd_notype))
     {
         CfOut(cf_error, "", "Unsupported database type \"%s\" in databases promise", value);
         PromiseRef(cf_error, pp);

@@ -25,6 +25,13 @@
 #include "cf3.defs.h"
 #include "cf-execd-runner.h"
 
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "cfstream.h"
+#include "string_lib.h"
+#include "pipes.h"
+#include "unix.h"
+
 /*******************************************************************/
 
 static const int INF_LINES = -2;
@@ -89,7 +96,7 @@ static bool TwinExists(void)
     snprintf(twinfilename, CF_BUFSIZE, "%s/%s", CFWORKDIR, TwinFilename());
     MapName(twinfilename);
 
-    return stat(twinfilename, &sb) == 0 && IsExecutable(twinfilename);
+    return (stat(twinfilename, &sb) == 0) && (IsExecutable(twinfilename));
 }
 
 /* Buffer has to be at least CF_BUFSIZE bytes long */
@@ -180,8 +187,37 @@ void LocalExec(const ExecConfig *config)
 
     CfOut(cf_verbose, "", " -> Command is executing...%s\n", esc_command);
 
-    while (!feof(pp) && CfReadLine(line, CF_BUFSIZE, pp))
+    while (!feof(pp))
     {
+        if(!IsReadReady(fileno(pp), (config->agent_expireafter * SECONDS_PER_MINUTE)))
+        {
+            char errmsg[CF_MAXVARSIZE];
+            snprintf(errmsg, sizeof(errmsg), "cf-execd: !! Timeout waiting for output from agent (agent_expireafter=%d) - terminating it",
+                     config->agent_expireafter);
+
+            CfOut(cf_error, "", "%s", errmsg);
+            fprintf(fp, "%s\n", errmsg);
+            count++;
+
+            pid_t pid_agent;
+
+            if(PipeToPid(&pid_agent, pp))
+            {
+                ProcessSignalTerminate(pid_agent);
+            }
+            else
+            {
+                CfOut(cf_error, "", "!! Could not get PID of agent");
+            }
+
+            break;
+        }
+
+        if(!CfReadLine(line, CF_BUFSIZE, pp))
+        {
+            break;
+        }
+
         if (ferror(pp))
         {
             fflush(pp);
@@ -265,6 +301,7 @@ static int FileChecksum(char *filename, unsigned char digest[EVP_MAX_MD_SIZE + 1
 
         if (!md)
         {
+            fclose(file);
             return 0;
         }
 
@@ -351,7 +388,9 @@ static void MailResult(const ExecConfig *config, char *file)
     struct sockaddr_in raddr;
     struct servent *server;
     struct stat statbuf;
+#if defined LINUX || defined NETBSD || defined FREEBSD || defined OPENBSD
     time_t now = time(NULL);
+#endif
     FILE *fp;
 
     CfOut(cf_verbose, "", "Mail result...\n");
@@ -621,7 +660,7 @@ static int Dialogue(int sd, char *s)
 
         CfDebug("%c", ch);
 
-        if (ch == '\n' || ch == '\0')
+        if ((ch == '\n') || (ch == '\0'))
         {
             charpos = 0;
 

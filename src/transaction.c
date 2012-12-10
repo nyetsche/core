@@ -23,31 +23,42 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: transaction.c                                                       */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 
+#include "env_context.h"
+#include "promises.h"
+#include "transaction.h"
 #include "dbm_api.h"
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "files_operators.h"
+#include "files_hashes.h"
+#include "item_lib.h"
+#include "expand.h"
+#include "atexit.h"
+#include "cfstream.h"
+#include "verify_processes.h"
+
+#define CFLOGSIZE 1048576       /* Size of lock-log before rotation */
+
+static pthread_once_t lock_cleanup_once = PTHREAD_ONCE_INIT;
 
 static void WaitForCriticalSection(void);
 static void ReleaseCriticalSection(void);
 static time_t FindLock(char *last);
 static int RemoveLock(char *name);
 static void LogLockCompletion(char *cflog, int pid, char *str, char *operator, char *operand);
-static time_t FindLockTime(char *name);
 static pid_t FindLockPid(char *name);
 static void RemoveDates(char *s);
+static bool WriteLockDataCurrent(CF_DB *dbp, char *lock_id);
+static bool WriteLockData(CF_DB *dbp, char *lock_id, LockData *lock_data);
+
 
 /*****************************************************************************/
 
-void SummarizeTransaction(Attributes attr, Promise *pp, char *logname)
+void SummarizeTransaction(Attributes attr, const Promise *pp, const char *logname)
 {
-    if (logname && attr.transaction.log_string)
+    if (logname && (attr.transaction.log_string))
     {
         char buffer[CF_EXPANDSIZE];
 
@@ -81,11 +92,32 @@ void SummarizeTransaction(Attributes attr, Promise *pp, char *logname)
     }
     else if (attr.transaction.log_failed)
     {
-        if (strcmp(logname, attr.transaction.log_failed) == 0)
+        if (logname && (strcmp(logname, attr.transaction.log_failed) == 0))
         {
             cfPS(cf_log, CF_NOP, "", pp, attr, "%s", attr.transaction.log_string);
         }
     }
+}
+
+/*****************************************************************************/
+
+static void LocksCleanup(void)
+{
+    if (strlen(CFLOCK) > 0)
+    {
+        CfLock best_guess;
+        best_guess.lock = xstrdup(CFLOCK);
+        best_guess.last = xstrdup(CFLAST);
+        best_guess.log = xstrdup(CFLOG);
+        YieldCurrentLock(best_guess);
+    }
+}
+
+/*****************************************************************************/
+
+static void RegisterLockCleanup(void)
+{
+    RegisterAtExitFunction(&LocksCleanup);
 }
 
 /*****************************************************************************/
@@ -100,6 +132,9 @@ CfLock AcquireLock(char *operand, char *host, time_t now, Attributes attr, Promi
     char str_digest[CF_BUFSIZE];
     CfLock this;
     unsigned char digest[EVP_MAX_MD_SIZE + 1];
+
+    /* Register a cleanup handler */
+    pthread_once(&lock_cleanup_once, &RegisterLockCleanup);
 
     this.last = (char *) CF_UNDEFINED;
     this.lock = (char *) CF_UNDEFINED;
@@ -135,7 +170,7 @@ CfLock AcquireLock(char *operand, char *host, time_t now, Attributes attr, Promi
 
 /* As a backup to "done" we need something immune to re-use */
 
-    if (THIS_AGENT_TYPE == cf_agent)
+    if (THIS_AGENT_TYPE == AGENT_TYPE_AGENT)
     {
         if (IsItemIn(DONELIST, str_digest))
         {
@@ -244,7 +279,7 @@ CfLock AcquireLock(char *operand, char *host, time_t now, Attributes attr, Promi
 
                     err = GracefulTerminate(pid);
 
-                    if (err || errno == ESRCH)
+                    if (err || (errno == ESRCH) || (errno == ETIMEDOUT))
                     {
                         LogLockCompletion(cflog, pid, "Lock expired, process killed", cc_operator, cc_operand);
                         unlink(cflock);
@@ -317,11 +352,62 @@ void YieldCurrentLock(CfLock this)
         return;
     }
 
+    /* This lock has ben yield'ed, don't try to yield it again in case process
+     * is terminated abnormally.
+     */
+    strcpy(CFLOCK, "");
+    strcpy(CFLAST, "");
+    strcpy(CFLOG, "");
+
     LogLockCompletion(this.log, getpid(), "Lock removed normally ", this.lock, "");
 
     free(this.last);
     free(this.lock);
     free(this.log);
+}
+
+/************************************************************************/
+
+bool AcquireLockByID(char *lock_id, int acquire_after_minutes)
+/*
+ * Much simpler than AcquireLock. Useful when you just want to check
+ * if a certain amount of time has elapsed for an action since last
+ * time you checked.  No need to clean up after calling this
+ * (e.g. like YieldCurrentLock()).  
+ *
+ * WARNING: Is prone to race-conditions, both on the thread and 
+ *          process level.  
+ */
+{
+    CF_DB *dbp = OpenLock();
+    
+    if(dbp == NULL)
+    {
+        return false;
+    }
+    
+    bool result;
+    LockData lock_data;
+    
+    if (ReadDB(dbp, lock_id, &lock_data, sizeof(lock_data)))
+    {
+        if(lock_data.time + (acquire_after_minutes * SECONDS_PER_MINUTE) < time(NULL))
+        {
+            result = WriteLockDataCurrent(dbp, lock_id);
+        }
+        else
+        {
+            result = false;
+        }
+    }
+    else
+    {
+        result = WriteLockDataCurrent(dbp, lock_id);
+    }
+    
+    CloseLock(dbp);
+
+    return result;
 }
 
 /************************************************************************/
@@ -444,7 +530,6 @@ static time_t FindLock(char *last)
 int WriteLock(char *name)
 {
     CF_DB *dbp;
-    LockData entry;
 
     CfDebug("WriteLock(%s)\n", name);
 
@@ -455,15 +540,68 @@ int WriteLock(char *name)
         return -1;
     }
 
-    entry.pid = getpid();
-    entry.time = time((time_t *) NULL);
-
-    WriteDB(dbp, name, &entry, sizeof(entry));
+    WriteLockDataCurrent(dbp, name);
 
     CloseLock(dbp);
     ThreadUnlock(cft_lock);
 
     return 0;
+}
+
+/************************************************************************/
+
+static bool WriteLockDataCurrent(CF_DB *dbp, char *lock_id)
+{
+    LockData lock_data;
+    
+    lock_data.pid = getpid();
+    lock_data.time = time(NULL);
+    
+    return WriteLockData(dbp, lock_id, &lock_data);
+}
+
+/*****************************************************************************/
+
+static bool WriteLockData(CF_DB *dbp, char *lock_id, LockData *lock_data)
+{
+    if(WriteDB(dbp, lock_id, lock_data, sizeof(LockData)))
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+/*****************************************************************************/
+
+bool InvalidateLockTime(char *lock_id)
+{
+    time_t epoch = 0;
+    
+    CF_DB *dbp = OpenLock();
+
+    if (dbp == NULL)
+    {
+        return false;
+    }
+    
+    LockData lock_data;
+
+    if(!ReadDB(dbp, lock_id, &lock_data, sizeof(lock_data)))
+    {
+        CloseLock(dbp);
+        return true;  /* nothing to invalidate */
+    }
+    
+    lock_data.time = epoch;
+
+    bool result = WriteLockData(dbp, lock_id, &lock_data);
+
+    CloseLock(dbp);
+    
+    return result;
 }
 
 /*****************************************************************************/
@@ -513,7 +651,7 @@ static void LogLockCompletion(char *cflog, int pid, char *str, char *operator, c
 
 /*****************************************************************************/
 
-int RemoveLock(char *name)
+static int RemoveLock(char *name)
 {
     CF_DB *dbp;
 
@@ -532,7 +670,7 @@ int RemoveLock(char *name)
 
 /************************************************************************/
 
-static time_t FindLockTime(char *name)
+time_t FindLockTime(char *name)
 {
     CF_DB *dbp;
     LockData entry;
@@ -660,7 +798,7 @@ static void RemoveDates(char *s)
                 break;
             }
 
-            if (isdigit(*sp))
+            if (isdigit((int)*sp))
             {
                 *sp = 't';
             }
@@ -715,7 +853,7 @@ void PurgeLocks()
 
         if (now - entry.time > (time_t) CF_LOCKHORIZON)
         {
-            CfOut(cf_verbose, "", " --> Purging lock (%ld) %s", now - entry.time, key);
+            CfOut(cf_verbose, "", " --> Purging lock (%jd) %s", (intmax_t)(now - entry.time), key);
             DBCursorDeleteEntry(dbcp);
         }
     }
@@ -760,7 +898,7 @@ static void ReleaseCriticalSection()
 
 int ShiftChange(void)
 {
-    if (IsDefinedClass("(Hr00|Hr06|Hr12|Hr18).Min00_05"))
+    if (IsDefinedClass("(Hr00|Hr06|Hr12|Hr18).Min00_05", NULL))
     {
         return true;
     }
@@ -768,4 +906,113 @@ int ShiftChange(void)
     {
         return false;
     }
+}
+
+/************************************************************************/
+
+bool EnforcePromise(enum cfopaction action)
+{
+    return ((!DONTDO) && (action != cfa_warn));
+}
+
+static char SYSLOG_HOST[CF_BUFSIZE] = "localhost";
+static uint16_t SYSLOG_PORT = 514;
+
+int FACILITY;
+
+/*****************************************************************************/
+
+void SetSyslogFacility(int facility)
+{
+    FACILITY = facility;
+}
+
+void SetSyslogHost(const char *host)
+{
+    strlcpy(SYSLOG_HOST, host, CF_BUFSIZE);
+}
+
+void SetSyslogPort(uint16_t port)
+{
+    SYSLOG_PORT = port;
+}
+
+void RemoteSysLog(int log_priority, const char *log_string)
+{
+    int sd, rfc3164_len = 1024;
+    char message[CF_BUFSIZE];
+    time_t now = time(NULL);
+    int pri = log_priority | FACILITY;
+
+#if defined(HAVE_GETADDRINFO)
+    int err;
+    struct addrinfo query, *response, *ap;
+    char strport[CF_MAXVARSIZE];
+
+    snprintf(strport, CF_MAXVARSIZE - 1, "%u", (unsigned) SYSLOG_PORT);
+    memset(&query, 0, sizeof(struct addrinfo));
+    query.ai_family = AF_UNSPEC;
+    query.ai_socktype = SOCK_DGRAM;
+
+    if ((err = getaddrinfo(SYSLOG_HOST, strport, &query, &response)) != 0)
+    {
+        CfOut(cf_inform, "", "Unable to find syslog_host or service: (%s/%s) %s", SYSLOG_HOST, strport,
+              gai_strerror(err));
+        return;
+    }
+
+    for (ap = response; ap != NULL; ap = ap->ai_next)
+    {
+        CfOut(cf_verbose, "", " -> Connect to syslog %s = %s on port %s\n", SYSLOG_HOST, sockaddr_ntop(ap->ai_addr),
+              strport);
+
+        if ((sd = socket(ap->ai_family, ap->ai_socktype, IPPROTO_UDP)) == -1)
+        {
+            CfOut(cf_inform, "socket", "Couldn't open a socket");
+            continue;
+        }
+        else
+        {
+            char timebuffer[26];
+
+            snprintf(message, rfc3164_len, "<%u>%.15s %s %s", pri, cf_strtimestamp_local(now, timebuffer) + 4, VFQNAME,
+                     log_string);
+            if (sendto(sd, message, strlen(message), 0, ap->ai_addr, ap->ai_addrlen) == -1)
+            {
+                CfOut(cf_verbose, "sendto", " -> Couldn't send \"%s\" to syslog server \"%s\"\n", message, SYSLOG_HOST);
+            }
+            else
+            {
+                CfOut(cf_verbose, "", " -> Syslog message: \"%s\" to server \"%s\"\n", message, SYSLOG_HOST);
+            }
+            close(sd);
+            return;
+        }
+    }
+
+#else
+    struct sockaddr_in addr;
+    char timebuffer[26];
+
+    sockaddr_pton(AF_INET, SYSLOG_HOST, &addr);
+    addr.sin_port = htons(SYSLOG_PORT);
+
+    if ((sd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
+    {
+        CfOut(cf_error, "sendto", " !! Unable to send syslog datagram");
+        return;
+    }
+
+    snprintf(message, rfc3164_len, "<%u>%.15s %s %s", pri, cf_strtimestamp_local(now, timebuffer) + 4, VFQNAME,
+             log_string);
+
+    if (sendto(sd, message, strlen(message), 0, (struct sockaddr *) &addr, sizeof(addr)) == -1)
+    {
+        CfOut(cf_error, "sendto", " !! Unable to send syslog datagram");
+        return;
+    }
+
+    CfOut(cf_verbose, "", " -> Syslog message: \"%s\" to server %s\n", message, SYSLOG_HOST);
+    close(sd);
+#endif
 }

@@ -23,14 +23,9 @@
   included file COSL.txt.
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: cf_sql.c                                                            */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "cfstream.h"
 
 #ifdef HAVE_MYSQL_H
 # include <mysql.h>
@@ -47,28 +42,6 @@
 /* Cfengine connectors for sql databases. Note that there are significant
    differences in db admin functions in the various implementations. e.g.
    sybase/mysql "use database, create database" not in postgres.
-
-CfConnectDB(&cfdb,SQL_TYPE,SQL_SERVER,SQL_OWNER,SQL_PASSWD,SQL_DATABASE);
-
-if (!cfdb.connected)
-   {
-   printf("Could not open sqldb\n");
-   return;
-   }
-
-CfNewQueryDB(&cfdb,"SELECT * from topics");
-
-while(CfFetchRow(&cfdb))
-   {
-   for (i = 0; i < cfdb.maxcolumns; i++)
-      {
-      printf("Row %d: %s\n",i,CfFetchColumn(&cfdb,i));
-      }
-   }
-
-CfDeleteQuery(&cfdb);
-
-CfCloseDB(&cfdb);
 */
 
 /*****************************************************************************/
@@ -487,7 +460,7 @@ char **CfFetchRow(CfdbConn *cfdb)
 
 char *CfFetchColumn(CfdbConn *cfdb, int col)
 {
-    if (cfdb->rowdata && cfdb->rowdata[col])
+    if ((cfdb->rowdata) && (cfdb->rowdata[col]))
     {
         return cfdb->rowdata[col];
     }

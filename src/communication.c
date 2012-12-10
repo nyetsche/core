@@ -23,14 +23,9 @@
   included file COSL.txt.
 */
 
-/*******************************************************************/
-/*                                                                 */
-/* IP layers                                                       */
-/*                                                                 */
-/*******************************************************************/
+#include "communication.h"
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "cfstream.h"
 
 /*********************************************************************/
 
@@ -104,11 +99,11 @@ void DePort(char *address)
     {
         chop = ld;
     }
-    else if (dcount > 1 && fc != NULL)
+    else if ((dcount > 1) && (fc != NULL))
     {
         chop = fc;
     }
-    else if (ccount > 1 && fd != NULL)
+    else if ((ccount > 1) && (fd != NULL))
     {
         chop = fd;
     }
@@ -203,7 +198,7 @@ int IsIPV4Address(char *name)
 
     for (sp = name; *sp != '\0'; sp++)
     {
-        if (!isdigit((int) *sp) && (*sp != '.'))
+        if ((!isdigit((int) *sp)) && (*sp != '.'))
         {
             return false;
         }
@@ -374,4 +369,14 @@ int GetMyHostInfo(char nameBuf[MAXHOSTNAMELEN], char ipBuf[MAXIP4CHARLEN])
     }
 
     return false;
+}
+
+/*****************************************************************************/
+
+unsigned short SocketFamily(int sd)
+{
+   struct sockaddr sa;
+   socklen_t len;
+   getsockname(sd, &sa, &len);
+   return sa.sa_family;
 }

@@ -1,6 +1,4 @@
-AM_CFLAGS = $(NOVA_CFLAGS) $(CONSTELLATION_CFLAGS) $(GCC_CFLAG)
-INCLUDES = -I$(top_srcdir)/src
-
+AM_CFLAGS = $(NOVA_CFLAGS) $(GCC_CFLAG) -I$(top_srcdir)/src
 
 noinst_PROGRAMS = mock-package-manager
 
@@ -14,6 +12,6 @@ TESTS = testall
 TESTS_ENVIRONMENT = env AGENT=`pwd`/../../src/cf-agent MOCK_PACKAGE_MANAGER=`pwd`/mock-package-manager
 
 dist-hook:
-	tar -c -f - [0-9]* --exclude '*svn*' | tar -x -C $(distdir) -f -
+	tar -c -f - [0-9]* | tar -x -C $(distdir) -f -
 
 CLEANFILES = *.gcno *.gcda

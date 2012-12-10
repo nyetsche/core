@@ -26,12 +26,11 @@
 # include <conf.h>
 #endif
 
-#include <stdlib.h>
-
+#include "cf3.defs.h"
 #include "bool.h"
 #include "logic_expressions.h"
-#include "cf3.defs.h"
-#include "prototypes3.h"
+
+#include <stdlib.h>
 
 /* <primary> */
 

@@ -23,14 +23,17 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: verify_exec.c                                                       */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "promises.h"
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "vars.h"
+#include "conversion.h"
+#include "instrumentation.h"
+#include "attributes.h"
+#include "cfstream.h"
+#include "pipes.h"
 
 static int ExecSanityChecks(Attributes a, Promise *pp);
 static void PreviewProtocolLine(char *line, char *comm);
@@ -54,7 +57,7 @@ void VerifyExecPromise(Promise *pp)
 
 static int ExecSanityChecks(Attributes a, Promise *pp)
 {
-    if (a.contain.nooutput && a.contain.preview)
+    if ((a.contain.nooutput) && (a.contain.preview))
     {
         CfOut(cf_error, "", "no_output and preview are mutually exclusive (broken promise)");
         PromiseRef(cf_error, pp);
@@ -97,11 +100,13 @@ static int ExecSanityChecks(Attributes a, Promise *pp)
 static void VerifyExec(Attributes a, Promise *pp)
 {
     CfLock thislock;
-    char unsafeLine[CF_BUFSIZE], line[sizeof(unsafeLine) * 2], eventname[CF_BUFSIZE];
+    char line[CF_BUFSIZE], eventname[CF_BUFSIZE];
     char comm[20];
     char execstr[CF_EXPANDSIZE];
     int outsourced, count = 0;
+#if !defined(__MINGW32__)
     mode_t maskval = 0;
+#endif
     FILE *pfp;
     char cmdOutBuf[CF_BUFSIZE];
     int cmdOutBufPos = 0;
@@ -144,12 +149,35 @@ static void VerifyExec(Attributes a, Promise *pp)
 
     PromiseBanner(pp);
 
-    CfOut(cf_inform, "", " -> Executing \'%s\' ...(timeout=%d,owner=%ju,group=%ju)\n", execstr, a.contain.timeout,
-          (uintmax_t)a.contain.owner, (uintmax_t)a.contain.group);
+    char timeout_str[CF_BUFSIZE];
+    if (a.contain.timeout == CF_NOINT)
+    {
+        snprintf(timeout_str, CF_BUFSIZE, "no timeout");
+    }
+    else
+    {
+        snprintf(timeout_str, CF_BUFSIZE, "timeout=%ds", a.contain.timeout);
+    }
+
+    char owner_str[CF_BUFSIZE] = "";
+    if (a.contain.owner != -1)
+    {
+        snprintf(owner_str, CF_BUFSIZE, ",uid=%ju", (uintmax_t)a.contain.owner);
+    }
+
+    char group_str[CF_BUFSIZE] = "";
+    if (a.contain.group != -1)
+    {
+        snprintf(group_str, CF_BUFSIZE, ",gid=%ju", (uintmax_t)a.contain.group);
+    }
+
+
+    CfOut(cf_inform, "", " -> Executing \'%s\' ... (%s%s%s)\n", execstr,
+          timeout_str, owner_str, group_str);
 
     BeginMeasure();
 
-    if (DONTDO && !a.contain.preview)
+    if (DONTDO && (!a.contain.preview))
     {
         CfOut(cf_error, "", "-> Would execute script %s\n", execstr);
     }
@@ -176,7 +204,7 @@ static void VerifyExec(Attributes a, Promise *pp)
             outsourced = false;
         }
 
-        if (outsourced || !a.transaction.background)    // work done here: either by child or non-background parent
+        if (outsourced || (!a.transaction.background))    // work done here: either by child or non-background parent
         {
             if (a.contain.timeout != CF_NOINT)
             {
@@ -223,8 +251,7 @@ static void VerifyExec(Attributes a, Promise *pp)
                     return;
                 }
 
-                CfReadLine(unsafeLine, CF_BUFSIZE - 1, pfp);
-                ReplaceStr(unsafeLine, line, sizeof(line), "%", "%%");  // escape format char
+                CfReadLine(line, CF_BUFSIZE - 1, pfp);
 
                 if (strstr(line, "cfengine-die"))
                 {
@@ -246,9 +273,9 @@ static void VerifyExec(Attributes a, Promise *pp)
 
                 if (a.module)
                 {
-                    ModuleProtocol(execstr, line, !a.contain.nooutput);
+                    ModuleProtocol(execstr, line, !a.contain.nooutput, pp->namespace);
                 }
-                else if (!a.contain.nooutput && NonEmptyLine(line))
+                else if ((!a.contain.nooutput) && (NonEmptyLine(line)))
                 {
                     lineOutLen = strlen(comm) + strlen(line) + 12;
 
@@ -309,7 +336,7 @@ static void VerifyExec(Attributes a, Promise *pp)
         snprintf(eventname, CF_BUFSIZE - 1, "Exec(%s)", execstr);
 
 #ifndef MINGW
-        if (a.transaction.background && outsourced)
+        if ((a.transaction.background) && outsourced)
         {
             CfOut(cf_verbose, "", " -> Backgrounded command (%s) is done - exiting\n", execstr);
             exit(0);

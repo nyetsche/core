@@ -30,12 +30,21 @@
 /*******************************************************************/
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 #include "cf3parse.h"
+
+#include "env_context.h"
 #include "parser_state.h"
+#include "files_names.h"
+#include "unix.h"
 
 /* yyinput/input are generated and unused */
-#pragma GCC diagnostic ignored "-Wunused-function"
+
+#if defined(__GNUC__)
+# define GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
+# if GCC_VERSION >= 40200
+#  pragma GCC diagnostic ignored "-Wunused-function"
+# endif
+#endif
 
 #undef malloc
 #undef realloc
@@ -68,9 +77,11 @@ promises   bundle
 
 body       body
 
-nakedvar   [$@][(][a-zA-Z0-9_\200-\377.]+[)]|[$@][{][a-zA-Z0-9_\200-\377.]+[}]
+nakedvar   [$@][(][a-zA-Z0-9_\[\]\200-\377.:]+[)]|[$@][{][a-zA-Z0-9_\[\]\200-\377.:]+[}]
 
 id         [a-zA-Z0-9_\200-\377]+
+
+blockid    [a-zA-Z0-9_\200-\377]+[:][a-zA-Z0-9_\200-\377]+
 
 assign     =>
 
@@ -100,7 +111,7 @@ arrow      ->
 
 qstring    \"((\\(.|\n))|[^"\\])*\"|\'((\\(.|\n))|[^'\\])*\'|`[^`]*`
 
-class      [.|&!()a-zA-Z0-9_\200-\377]+::
+class      [.|&!()a-zA-Z0-9_\200-\377:]+::
 
 category   [a-zA-Z_]+:
 
@@ -144,7 +155,20 @@ category   [a-zA-Z_]+:
                               yyerror("identifier too long");
                           }
                           strncpy(P.currentid, yytext, CF_MAXVARSIZE);
-                          return ID;
+                          return IDSYNTAX;
+                      }
+
+
+{blockid}             {
+                          size_t token_length = strlen(yytext);
+                          P.offsets.last_id = P.offsets.current - token_length;
+                          P.line_pos += token_length;
+                          if (strlen(yytext) > CF_MAXVARSIZE-1)
+                          {
+                              yyerror("qualified identifier too long");
+                          }
+                          strncpy(P.currentid, yytext, CF_MAXVARSIZE);
+                          return IDSYNTAX;
                       }
 
 
@@ -219,7 +243,7 @@ category   [a-zA-Z_]+:
 
                           P.currentstring = xstrdup(tmp);
 
-                          if (THIS_AGENT_TYPE == cf_common)
+                          if (THIS_AGENT_TYPE == AGENT_TYPE_COMMON)
                           {
                               IsCf3VarString(tmp);
                           }

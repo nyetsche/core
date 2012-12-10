@@ -23,22 +23,20 @@
   included file COSL.txt.
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: iteration.c                                                         */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "scope.h"
+#include "unix.h"
+#include "cfstream.h"
+#include "fncall.h"
 
 static void DeleteReferenceRlist(Rlist *list);
 
 /*****************************************************************************/
 
-Rlist *NewIterationContext(char *scopeid, Rlist *namelist)
+Rlist *NewIterationContext(const char *scopeid, Rlist *namelist)
 {
-    Rlist *rp, *rps, *deref_listoflists = NULL;
+    Rlist *rps, *deref_listoflists = NULL;
     Rval retval;
     enum cfdatatype dtype;
     CfAssoc *new;
@@ -56,7 +54,7 @@ Rlist *NewIterationContext(char *scopeid, Rlist *namelist)
         return NULL;
     }
 
-    for (rp = namelist; rp != NULL; rp = rp->next)
+    for (Rlist *rp = namelist; rp != NULL; rp = rp->next)
     {
         dtype = GetVariable(scopeid, rp->item, &retval);
 
@@ -91,7 +89,7 @@ Rlist *NewIterationContext(char *scopeid, Rlist *namelist)
             OrthogAppendRlist(&deref_listoflists, new, CF_LIST);
             rp->state_ptr = new->rval.item;
 
-            while (rp->state_ptr && strcmp(rp->state_ptr->item, CF_NULL_VALUE) == 0)
+            while ((rp->state_ptr) && (strcmp(rp->state_ptr->item, CF_NULL_VALUE) == 0))
             {
                 if (rp->state_ptr)
                 {
@@ -118,6 +116,8 @@ void DeleteIterationContext(Rlist *deref)
     }
 }
 
+/*****************************************************************************/
+
 static int IncrementIterationContextInternal(Rlist *iterator, int level)
 {
     Rlist *state;
@@ -141,7 +141,7 @@ static int IncrementIterationContextInternal(Rlist *iterator, int level)
 
 /* Go ahead and increment */
 
-    CfDebug(" -> Incrementing (%s) from \"%s\"\n", cp->lval, (char *) iterator->state_ptr->item);
+    CfDebug(" -> Incrementing (%s - level %d) from \"%s\"\n", cp->lval, level, (char *) iterator->state_ptr->item);
 
     if (state->next == NULL)
     {
@@ -177,18 +177,19 @@ static int IncrementIterationContextInternal(Rlist *iterator, int level)
 
         CfDebug(" <- Incrementing wheel (%s) to \"%s\"\n", cp->lval, (char *) iterator->state_ptr->item);
 
-        while (iterator->state_ptr && strcmp(iterator->state_ptr->item, CF_NULL_VALUE) == 0)
+        while (NullIterators(iterator))
         {
             if (IncrementIterationContextInternal(iterator->next, level + 1))
             {
-                /* Not at end yet, so reset this wheel (next because we always start with cf_null now) */
+                // If we are at the end of this wheel, we need to shift to next wheel
                 iterator->state_ptr = cp->rval.item;
                 iterator->state_ptr = iterator->state_ptr->next;
                 return true;
             }
             else
             {
-                /* Reached last variable wheel - pass up */
+                // Otherwise increment this wheel
+                iterator->state_ptr = iterator->state_ptr->next;
                 break;
             }
         }
@@ -201,6 +202,8 @@ static int IncrementIterationContextInternal(Rlist *iterator, int level)
         return true;
     }
 }
+
+/*****************************************************************************/
 
 int IncrementIterationContext(Rlist *iterator)
 {
@@ -229,7 +232,7 @@ int EndOfIteration(Rlist *iterator)
             continue;
         }
 
-        if (state && state->next != NULL)
+        if (state && (state->next != NULL))
         {
             return false;
         }
@@ -255,7 +258,7 @@ int NullIterators(Rlist *iterator)
     {
         state = rp->state_ptr;
 
-        if (state && strcmp(state->item, CF_NULL_VALUE) == 0)
+        if (state && (strcmp(state->item, CF_NULL_VALUE) == 0))
         {
             return true;
         }

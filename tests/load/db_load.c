@@ -1,6 +1,8 @@
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
 #include "dbm_api.h"
+#include "cfstream.h"
+
 #include <assert.h>
 
 #define MAX_THREADS 10000
@@ -24,7 +26,7 @@
 
 
 int DEBUG = false;  // wether or not to get output from CfDebug()
-char CFWORKDIR[CF_BUFSIZE] = "/tmp";
+char CFWORKDIR[CF_BUFSIZE];
 
 static bool CoinFlip(void);
 static void WriteReadWriteData(CF_DB *db);
@@ -201,6 +203,13 @@ int WriteReturnValues(int retvals[MAX_THREADS], pthread_t tids[MAX_THREADS], int
     return failures;
 }
 
+static void Cleanup(void)
+{
+    char cmd[CF_BUFSIZE];
+    snprintf(cmd, CF_BUFSIZE, "rm -rf '%s'", CFWORKDIR);
+    system(cmd);
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2)
@@ -209,8 +218,11 @@ int main(int argc, char **argv)
         exit(1);
     }
 
-    unlink("/tmp/cf_classes.qdbm");
-    unlink("/tmp/cf_classes.tcdb");
+    /* To clean up after databases are closed */
+    atexit(&Cleanup);
+
+    snprintf(CFWORKDIR, CF_BUFSIZE, "/tmp/db_load.XXXXXX");
+    mkdtemp(CFWORKDIR);
 
     int numthreads = atoi(argv[1]);
 
@@ -240,8 +252,6 @@ int main(int argc, char **argv)
     int retvals[MAX_THREADS];
 
     int failures = WriteReturnValues(retvals, tids, numthreads);
-
-    CloseAllDB();
 
     exit(failures);
 }

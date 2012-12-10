@@ -23,14 +23,18 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: unix.c                                                              */
-/*                                                                           */
-/*****************************************************************************/
+#include "unix.h"
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "env_context.h"
+#include "vars.h"
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "item_lib.h"
+#include "conversion.h"
+#include "matching.h"
+#include "cfstream.h"
+#include "communication.h"
+#include "pipes.h"
 
 #ifdef HAVE_ZONE_H
 # include <zone.h>
@@ -44,6 +48,7 @@
 # include <sys/jail.h>
 #endif
 
+#define CF_IFREQ 2048           /* Reportedly the largest size that does not segfault 32/64 bit */
 #define CF_IGNORE_INTERFACES "ignore_interfaces.rx"
 
 #ifndef MINGW
@@ -61,6 +66,9 @@
 #  define SIZEOF_IFREQ(x) sizeof(struct ifreq)
 # endif
 
+static bool IsProcessRunning(pid_t pid);
+
+static void FindV6InterfacesInfo(void);
 
 static bool IgnoreJailInterface(int ifaceidx, struct sockaddr_in *inaddr);
 static bool IgnoreInterface(char *name);
@@ -72,7 +80,7 @@ static Rlist *IGNORE_INTERFACES = NULL;
 /*****************************************************************************/
 /* newly created, used in timeout.c and transaction.c */
 
-int Unix_GracefulTerminate(pid_t pid)
+int GracefulTerminate(pid_t pid)
 {
     int res;
 
@@ -98,7 +106,62 @@ int Unix_GracefulTerminate(pid_t pid)
 
 /*************************************************************/
 
-int Unix_GetCurrentUserName(char *userName, int userNameLen)
+void ProcessSignalTerminate(pid_t pid)
+{
+    if(!IsProcessRunning(pid))
+    {
+        return;
+    }
+
+
+    if(kill(pid, SIGINT) == -1)
+    {
+        CfOut(cf_error, "kill", "!! Could not send SIGINT to pid %" PRIdMAX , (intmax_t)pid);
+    }
+
+    sleep(1);
+
+
+    if(kill(pid, SIGTERM) == -1)
+    {
+        CfOut(cf_error, "kill", "!! Could not send SIGTERM to pid %" PRIdMAX , (intmax_t)pid);
+    }
+
+    sleep(5);
+
+
+    if(kill(pid, SIGKILL) == -1)
+    {
+        CfOut(cf_error, "kill", "!! Could not send SIGKILL to pid %" PRIdMAX , (intmax_t)pid);
+    }
+
+    sleep(1);
+}
+
+/*************************************************************/
+
+static bool IsProcessRunning(pid_t pid)
+{
+    int res = kill(pid, 0);
+
+    if(res == 0)
+    {
+        return true;
+    }
+
+    if(res == -1 && errno == ESRCH)
+    {
+        return false;
+    }
+
+    CfOut(cf_error, "kill", "!! Failed checking for process existence");
+
+    return false;
+}
+
+/*************************************************************/
+
+int GetCurrentUserName(char *userName, int userNameLen)
 {
     struct passwd *user_ptr;
 
@@ -118,16 +181,14 @@ int Unix_GetCurrentUserName(char *userName, int userNameLen)
 
 /*************************************************************/
 
-char *Unix_GetErrorStr(void)
+const char *GetErrorStr(void)
 {
     return strerror(errno);
 }
 
 /*************************************************************/
 
-/* from exec_tools.c */
-
-int Unix_IsExecutable(const char *file)
+int IsExecutable(const char *file)
 {
     struct stat sb;
     gid_t grps[NGROUPS];
@@ -146,7 +207,7 @@ int Unix_IsExecutable(const char *file)
         return false;
     }
 
-    if (getuid() == sb.st_uid || getuid() == 0)
+    if ((getuid() == sb.st_uid) || (getuid() == 0))
     {
         if (sb.st_mode & 0100)
         {
@@ -187,11 +248,7 @@ int Unix_IsExecutable(const char *file)
     return false;
 }
 
-/*******************************************************************/
-
-/* from exec_tools.c */
-
-int Unix_ShellCommandReturnsZero(char *comm, int useshell)
+int ShellCommandReturnsZero(const char *comm, int useshell)
 {
     int status;
     pid_t pid;
@@ -276,11 +333,7 @@ int Unix_ShellCommandReturnsZero(char *comm, int useshell)
     return false;
 }
 
-/**********************************************************************************/
-
-/* from verify_processes.c */
-
-int Unix_DoAllSignals(Item *siglist, Attributes a, Promise *pp)
+int DoAllSignals(Item *siglist, Attributes a, Promise *pp)
 {
     Item *ip;
     Rlist *rp;
@@ -310,7 +363,7 @@ int Unix_DoAllSignals(Item *siglist, Attributes a, Promise *pp)
 
             if (!DONTDO)
             {
-                if (signal == SIGKILL || signal == SIGTERM)
+                if ((signal == SIGKILL) || (signal == SIGTERM))
                 {
                     killed = true;
                 }
@@ -352,7 +405,6 @@ static int ForeignZone(char *s)
 # ifdef HAVE_GETZONEID
     zoneid_t zid;
     char *sp, zone[ZONENAME_MAX];
-    static psopts[CF_BUFSIZE];
 
     zid = getzoneid();
     getzonenamebyid(zid, zone, ZONENAME_MAX);
@@ -381,7 +433,7 @@ static int ForeignZone(char *s)
 
 /*****************************************************************************/
 
-static char *GetProcessOptions()
+static const char *GetProcessOptions(void)
 {
 # ifdef HAVE_GETZONEID
     zoneid_t zid;
@@ -410,16 +462,19 @@ static char *GetProcessOptions()
     return VPSOPTS[VSYSTEMHARDCLASS];
 }
 
-/*****************************************************************************/
-
-/* from verify_processes.c */
-
-int Unix_LoadProcessTable(Item **procdata)
+int LoadProcessTable(Item **procdata)
 {
     FILE *prp;
     char pscomm[CF_MAXLINKSIZE], vbuff[CF_BUFSIZE], *sp;
     Item *rootprocs = NULL;
     Item *otherprocs = NULL;
+
+    if (PROCESSTABLE)
+    {
+        CfOut(cf_verbose, "", " -> Reusing cached process state");
+        return true;
+    }
+
     const char *psopts = GetProcessOptions();
 
     snprintf(pscomm, CF_MAXLINKSIZE, "%s %s", VPSCOMM[VSYSTEMHARDCLASS], psopts);
@@ -437,7 +492,7 @@ int Unix_LoadProcessTable(Item **procdata)
         memset(vbuff, 0, CF_BUFSIZE);
         CfReadLine(vbuff, CF_BUFSIZE, prp);
 
-        for (sp = vbuff + strlen(vbuff) - 1; sp > vbuff && isspace(*sp); sp--)
+        for (sp = vbuff + strlen(vbuff) - 1; (sp > vbuff) && (isspace((int)*sp)); sp--)
         {
             *sp = '\0';
         }
@@ -486,9 +541,7 @@ int Unix_LoadProcessTable(Item **procdata)
 
 /*********************************************************************/
 
-/* from files_operators.c */
-
-void Unix_CreateEmptyFile(char *name)
+void CreateEmptyFile(char *name)
 {
     int tempfd;
 
@@ -543,12 +596,12 @@ static bool IgnoreJailInterface(int ifaceidx, struct sockaddr_in *inaddr)
 
 /******************************************************************/
 
-static void Unix_GetMacAddress(enum cfagenttype ag, int fd, struct ifreq *ifr, struct ifreq *ifp, Rlist **interfaces,
-                               Rlist **hardware)
+static void GetMacAddress(AgentType ag, int fd, struct ifreq *ifr, struct ifreq *ifp, Rlist **interfaces,
+                          Rlist **hardware)
 {
     char name[CF_MAXVARSIZE];
 
-    if (ag != cf_know)
+    if ((ag != AGENT_TYPE_KNOW) && (ag != AGENT_TYPE_GENDOC))
     {
         snprintf(name, CF_MAXVARSIZE, "hardware_mac[%s]", ifp->ifr_name);
     }
@@ -557,7 +610,7 @@ static void Unix_GetMacAddress(enum cfagenttype ag, int fd, struct ifreq *ifr, s
         snprintf(name, CF_MAXVARSIZE, "hardware_mac[interface_name]");
     }
 
-# ifdef SIOCGIFHWADDR
+# if defined(SIOCGIFHWADDR) && defined(HAVE_STRUCT_IFREQ_IFR_HWADDR)
     char hw_mac[CF_MAXVARSIZE];
 
     
@@ -574,16 +627,16 @@ static void Unix_GetMacAddress(enum cfagenttype ag, int fd, struct ifreq *ifr, s
     AppendRlist(interfaces, ifp->ifr_name, CF_SCALAR);
 
     snprintf(name, CF_MAXVARSIZE, "mac_%s", CanonifyName(hw_mac));
-    NewClass(name);
+    HardClass(name);
 # else
     NewScalar("sys", name, "mac_unknown", cf_str);
-    NewClass("mac_unknown");
+    HardClass("mac_unknown");
 # endif
 }
 
 /******************************************************************/
 
-void Unix_GetInterfaceInfo(enum cfagenttype ag)
+void GetInterfacesInfo(AgentType ag)
 {
     int fd, len, i, j, first_address = false, ipdefault = false;
     struct ifreq ifbuf[CF_IFREQ], ifr, *ifp;
@@ -596,7 +649,11 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
     char last_name[CF_BUFSIZE];
     Rlist *interfaces = NULL, *hardware = NULL, *ips = NULL;
 
-    CfDebug("Unix_GetInterfaceInfo()\n");
+    CfDebug("GetInterfacesInfo()\n");
+
+    // Long-running processes may call this many times
+    DeleteItemList(IPADDRESSES);
+    IPADDRESSES = NULL;
 
     memset(ifbuf, 0, sizeof(ifbuf));
 
@@ -616,7 +673,7 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
 # ifdef SIOCGIFCONF
     if (ioctl(fd, SIOCGIFCONF, &list) == -1 || (list.ifc_len < (sizeof(struct ifreq))))
 # else
-    if (ioctl(fd, OSIOCGIFCONF, &list) == -1 || (list.ifc_len < (sizeof(struct ifreq))))
+    if ((ioctl(fd, OSIOCGIFCONF, &list) == -1) || (list.ifc_len < (sizeof(struct ifreq))))
 # endif
     {
         CfOut(cf_error, "ioctl", "Couldn't get interfaces - old kernel? Try setting CF_IFREQ to 1024");
@@ -634,7 +691,7 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
             continue;
         }
 
-        if (ifp->ifr_name == NULL || strlen(ifp->ifr_name) == 0)
+        if ((ifp->ifr_name == NULL) || (strlen(ifp->ifr_name) == 0))
         {
             continue;
         }
@@ -683,7 +740,7 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
 
         snprintf(workbuf, CF_BUFSIZE, "net_iface_%s", CanonifyName(ifp->ifr_name));
 
-        NewClass(workbuf);
+        HardClass(workbuf);
 
         if (ifp->ifr_addr.sa_family == AF_INET)
         {
@@ -692,12 +749,10 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
             if (ioctl(fd, SIOCGIFFLAGS, &ifr) == -1)
             {
                 CfOut(cf_error, "ioctl", "No such network device");
-                //close(fd);
-                //return;
                 continue;
             }
 
-            if ((ifr.ifr_flags & IFF_BROADCAST) && !(ifr.ifr_flags & IFF_LOOPBACK))
+            if ((ifr.ifr_flags & IFF_UP) && (!(ifr.ifr_flags & IFF_LOOPBACK)))
             {
                 sin = (struct sockaddr_in *) &ifp->ifr_addr;
 
@@ -708,26 +763,26 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
                 }
 
                 CfDebug("Adding hostip %s..\n", inet_ntoa(sin->sin_addr));
-                NewClass(inet_ntoa(sin->sin_addr));
+                HardClass(inet_ntoa(sin->sin_addr));
 
                 if ((hp =
                      gethostbyaddr((char *) &(sin->sin_addr.s_addr), sizeof(sin->sin_addr.s_addr), AF_INET)) == NULL)
                 {
-                    CfDebug("No hostinformation for %s not found\n", inet_ntoa(sin->sin_addr));
+                    CfDebug("No hostinformation for %s found\n", inet_ntoa(sin->sin_addr));
                 }
                 else
                 {
                     if (hp->h_name != NULL)
                     {
                         CfDebug("Adding hostname %s..\n", hp->h_name);
-                        NewClass(hp->h_name);
+                        HardClass(hp->h_name);
 
                         if (hp->h_aliases != NULL)
                         {
                             for (i = 0; hp->h_aliases[i] != NULL; i++)
                             {
                                 CfOut(cf_verbose, "", "Adding alias %s..\n", hp->h_aliases[i]);
-                                NewClass(hp->h_aliases[i]);
+                                HardClass(hp->h_aliases[i]);
                             }
                         }
                     }
@@ -747,7 +802,7 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
                         if (*sp == '.')
                         {
                             *sp = '\0';
-                            NewClass(ip);
+                            HardClass(ip);
                         }
                     }
 
@@ -763,14 +818,12 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
                             NewScalar("sys", name, ip, cf_str);
                         }
                     }
-                    //close(fd);
-                    //return;
                     continue;
                 }
 
                 strncpy(ip, "ipv4_", CF_MAXVARSIZE);
                 strncat(ip, inet_ntoa(sin->sin_addr), CF_MAXVARSIZE - 6);
-                NewClass(ip);
+                HardClass(ip);
 
                 if (!ipdefault)
                 {
@@ -788,7 +841,7 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
                     if (*sp == '.')
                     {
                         *sp = '\0';
-                        NewClass(ip);
+                        HardClass(ip);
                     }
                 }
 
@@ -796,7 +849,7 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
 
                 strcpy(ip, inet_ntoa(sin->sin_addr));
 
-                if (ag != cf_know)
+                if ((ag != AGENT_TYPE_KNOW) && (ag != AGENT_TYPE_GENDOC))
                 {
                     snprintf(name, CF_MAXVARSIZE - 1, "ipv4[%s]", CanonifyName(ifp->ifr_name));
                 }
@@ -815,7 +868,7 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
                     {
                         *sp = '\0';
 
-                        if (ag != cf_know)
+                        if ((ag != AGENT_TYPE_KNOW) && (ag != AGENT_TYPE_GENDOC))
                         {
                             snprintf(name, CF_MAXVARSIZE - 1, "ipv4_%d[%s]", i--, CanonifyName(ifp->ifr_name));
                         }
@@ -830,7 +883,7 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
             }
 
             // Set the hardware/mac address array
-            Unix_GetMacAddress(ag, fd, &ifr, ifp, &interfaces, &hardware);
+            GetMacAddress(ag, fd, &ifr, ifp, &interfaces, &hardware);
         }
     }
 
@@ -839,11 +892,17 @@ void Unix_GetInterfaceInfo(enum cfagenttype ag)
     NewList("sys", "interfaces", interfaces, cf_slist);
     NewList("sys", "hardware_addresses", hardware, cf_slist);
     NewList("sys", "ip_addresses", ips, cf_slist);
+
+    DeleteRlist(interfaces);
+    DeleteRlist(hardware);
+    DeleteRlist(ips);
+
+    FindV6InterfacesInfo();
 }
 
 /*******************************************************************/
 
-void Unix_FindV6InterfaceInfo(void)
+static void FindV6InterfacesInfo(void)
 {
     FILE *pp = NULL;
     char buffer[CF_BUFSIZE];
@@ -862,18 +921,6 @@ void Unix_FindV6InterfaceInfo(void)
     case cfnt:
         /* NT cannot do this */
         return;
-
-    case irix:
-    case irix4:
-    case irix64:
-
-        if ((pp = cf_popen("/usr/etc/ifconfig -a", "r")) == NULL)
-        {
-            CfOut(cf_verbose, "", "Could not find interface info\n");
-            return;
-        }
-
-        break;
 
     case hp:
 
@@ -933,11 +980,11 @@ void Unix_FindV6InterfaceInfo(void)
                     }
                 }
 
-                if (IsIPV6Address(ip->name) && (strcmp(ip->name, "::1") != 0))
+                if ((IsIPV6Address(ip->name)) && ((strcmp(ip->name, "::1") != 0)))
                 {
                     CfOut(cf_verbose, "", "Found IPv6 address %s\n", ip->name);
                     AppendItem(&IPADDRESSES, ip->name, "");
-                    NewClass(ip->name);
+                    HardClass(ip->name);
                 }
             }
 

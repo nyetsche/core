@@ -1,4 +1,4 @@
-/* 
+/*
 
    Copyright (C) Cfengine AS
 
@@ -23,18 +23,20 @@
   included file COSL.txt.
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: logging.c                                                           */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
 
+#include "env_context.h"
 #include "dbm_api.h"
+#include "files_names.h"
+#include "atexit.h"
+#include "unix.h"
+#include "cfstream.h"
+#include "string_lib.h"
+
+#define CF_VALUE_LOG      "cf_value.log"
 
 static void ExtractOperationLock(char *op);
+static void EndAudit(void);
 
 static const char *NO_STATUS_TYPES[] = { "vars", "classes", NULL };
 static const char *NO_LOG_TYPES[] =
@@ -54,15 +56,19 @@ static CF_DB *AUDITDBP;
 
 /*****************************************************************************/
 
+static pthread_once_t end_audit_once = PTHREAD_ONCE_INIT;
+
+static void RegisterEndAudit(void)
+{
+    RegisterAtExitFunction(&EndAudit);
+}
+
 void BeginAudit()
 {
+    pthread_once(&end_audit_once, &RegisterEndAudit);
+
     Promise dummyp = { 0 };
     Attributes dummyattr = { {0} };
-
-    if (THIS_AGENT_TYPE != cf_agent)
-    {
-        return;
-    }
 
     memset(&dummyp, 0, sizeof(dummyp));
     memset(&dummyattr, 0, sizeof(dummyattr));
@@ -72,18 +78,12 @@ void BeginAudit()
 
 /*****************************************************************************/
 
-void EndAudit()
+void EndAudit(void)
 {
-    double total;
     char *sp, string[CF_BUFSIZE];
     Rval retval;
     Promise dummyp = { 0 };
     Attributes dummyattr = { {0} };
-
-    if (THIS_AGENT_TYPE != cf_agent)
-    {
-        return;
-    }
 
     memset(&dummyp, 0, sizeof(dummyp));
     memset(&dummyattr, 0, sizeof(dummyattr));
@@ -111,7 +111,7 @@ void EndAudit()
         fclose(fout);
     }
 
-    total = (double) (PR_KEPT + PR_NOTKEPT + PR_REPAIRED) / 100.0;
+    double total = (double) (PR_KEPT + PR_NOTKEPT + PR_REPAIRED) / 100.0;
 
     if (GetVariable("control_common", "version", &retval) != cf_notype)
     {
@@ -130,13 +130,7 @@ void EndAudit()
     }
     else
     {
-        snprintf(string, CF_BUFSIZE,
-                 "Outcome of version %s (%s-%d): Promises observed to be kept %.0f%%, Promises repaired %.0f%%, Promises not repaired %.0f\%%",
-                 sp, THIS_AGENT, CFA_BACKGROUND, (double) PR_KEPT / total, (double) PR_REPAIRED / total,
-                 (double) PR_NOTKEPT / total);
-
-        CfOut(cf_verbose, "", "%s", string);
-        PromiseLog(string);
+        LogTotalCompliance(sp);
     }
 
     if (strlen(string) > 0)
@@ -157,7 +151,7 @@ void EndAudit()
  */
 static bool IsPromiseValuableForStatus(const Promise *pp)
 {
-    return pp && pp->agentsubtype != NULL && !IsStrIn(pp->agentsubtype, NO_STATUS_TYPES);
+    return pp && (pp->agentsubtype != NULL) && (!IsStrIn(pp->agentsubtype, NO_STATUS_TYPES));
 }
 
 /*****************************************************************************/
@@ -169,12 +163,12 @@ static bool IsPromiseValuableForStatus(const Promise *pp)
 
 static bool IsPromiseValuableForLogging(const Promise *pp)
 {
-    return pp && pp->agentsubtype != NULL && !IsStrIn(pp->agentsubtype, NO_LOG_TYPES);
+    return pp && (pp->agentsubtype != NULL) && (!IsStrIn(pp->agentsubtype, NO_LOG_TYPES));
 }
 
 /*****************************************************************************/
 
-void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *reason)
+void ClassAuditLog(const Promise *pp, Attributes attr, char *str, char status, char *reason)
 {
     time_t now = time(NULL);
     char date[CF_BUFSIZE], lock[CF_BUFSIZE], key[CF_BUFSIZE], operator[CF_BUFSIZE];
@@ -196,10 +190,15 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
             {
                 PR_REPAIRED++;
                 VAL_REPAIRED += attr.transaction.value_repaired;
+
+#ifdef HAVE_NOVA
+                EnterpriseTrackTotalCompliance(pp, 'r');
+#endif
             }
         }
 
-        AddAllClasses(attr.classes.change, attr.classes.persist, attr.classes.timer);
+        AddAllClasses(pp->namespace, attr.classes.change, attr.classes.persist, attr.classes.timer);
+        MarkPromiseHandleDone(pp);
         DeleteAllClasses(attr.classes.del_change);
 
         if (IsPromiseValuableForLogging(pp))
@@ -215,6 +214,10 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
         {
             PR_NOTKEPT++;
             VAL_NOTKEPT += attr.transaction.value_notkept;
+
+#ifdef HAVE_NOVA
+            EnterpriseTrackTotalCompliance(pp, 'n');
+#endif
         }
 
         if (IsPromiseValuableForLogging(pp))
@@ -229,9 +232,13 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
         {
             PR_NOTKEPT++;
             VAL_NOTKEPT += attr.transaction.value_notkept;
+
+#ifdef HAVE_NOVA
+            EnterpriseTrackTotalCompliance(pp, 'n');
+#endif
         }
 
-        AddAllClasses(attr.classes.timeout, attr.classes.persist, attr.classes.timer);
+        AddAllClasses(pp->namespace, attr.classes.timeout, attr.classes.persist, attr.classes.timer);
         DeleteAllClasses(attr.classes.del_notkept);
 
         if (IsPromiseValuableForLogging(pp))
@@ -247,9 +254,13 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
         {
             PR_NOTKEPT++;
             VAL_NOTKEPT += attr.transaction.value_notkept;
+
+#ifdef HAVE_NOVA
+            EnterpriseTrackTotalCompliance(pp, 'n');
+#endif
         }
 
-        AddAllClasses(attr.classes.failure, attr.classes.persist, attr.classes.timer);
+        AddAllClasses(pp->namespace, attr.classes.failure, attr.classes.persist, attr.classes.timer);
         DeleteAllClasses(attr.classes.del_notkept);
 
         if (IsPromiseValuableForLogging(pp))
@@ -265,9 +276,13 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
         {
             PR_NOTKEPT++;
             VAL_NOTKEPT += attr.transaction.value_notkept;
+
+#ifdef HAVE_NOVA
+            EnterpriseTrackTotalCompliance(pp, 'n');
+#endif
         }
 
-        AddAllClasses(attr.classes.denied, attr.classes.persist, attr.classes.timer);
+        AddAllClasses(pp->namespace, attr.classes.denied, attr.classes.persist, attr.classes.timer);
         DeleteAllClasses(attr.classes.del_notkept);
 
         if (IsPromiseValuableForLogging(pp))
@@ -283,9 +298,13 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
         {
             PR_NOTKEPT++;
             VAL_NOTKEPT += attr.transaction.value_notkept;
+
+#ifdef HAVE_NOVA
+            EnterpriseTrackTotalCompliance(pp, 'n');
+#endif
         }
 
-        AddAllClasses(attr.classes.interrupt, attr.classes.persist, attr.classes.timer);
+        AddAllClasses(pp->namespace, attr.classes.interrupt, attr.classes.persist, attr.classes.timer);
         DeleteAllClasses(attr.classes.del_notkept);
 
         if (IsPromiseValuableForLogging(pp))
@@ -298,7 +317,7 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
     case CF_UNKNOWN:
     case CF_NOP:
 
-        AddAllClasses(attr.classes.kept, attr.classes.persist, attr.classes.timer);
+        AddAllClasses(pp->namespace, attr.classes.kept, attr.classes.persist, attr.classes.timer);
         DeleteAllClasses(attr.classes.del_kept);
 
         if (IsPromiseValuableForLogging(pp))
@@ -311,12 +330,17 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
         {
             PR_KEPT++;
             VAL_KEPT += attr.transaction.value_kept;
+
+#ifdef HAVE_NOVA
+            EnterpriseTrackTotalCompliance(pp, 'c');
+#endif
         }
 
+        MarkPromiseHandleDone(pp);
         break;
     }
 
-    if (!(attr.transaction.audit || AUDIT))
+    if (!((attr.transaction.audit) || AUDIT))
     {
         return;
     }
@@ -326,8 +350,9 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
         return;
     }
 
-    if (AUDITDBP == NULL || THIS_AGENT_TYPE != cf_agent)
+    if ((AUDITDBP == NULL) || (THIS_AGENT_TYPE != AGENT_TYPE_AGENT))
     {
+        CloseDB(AUDITDBP);
         return;
     }
 
@@ -351,7 +376,9 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
 
     if (DEBUG)
     {
-        AuditStatusMessage(stdout, status);
+        Writer *writer = FileWriter(stdout);
+        AuditStatusMessage(writer, status);
+        FileWriterDetach(writer);
     }
 
     if (ap != NULL)
@@ -359,7 +386,7 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
         strncpy(newaudit.comment, str, CF_AUDIT_COMMENT - 1);
         strncpy(newaudit.filename, ap->filename, CF_AUDIT_COMMENT - 1);
 
-        if (ap->version == NULL || strlen(ap->version) == 0)
+        if ((ap->version == NULL) || (strlen(ap->version) == 0))
         {
             CfDebug("Promised in %s bundle %s (unamed version last edited at %s) at/before line %d\n",
                     ap->filename, pp->bundle, ap->date, lineno);
@@ -386,7 +413,7 @@ void ClassAuditLog(Promise *pp, Attributes attr, char *str, char status, char *r
 
     newaudit.status = status;
 
-    if (AUDITDBP && (attr.transaction.audit || AUDIT))
+    if (AUDITDBP && ((attr.transaction.audit) || AUDIT))
     {
         WriteDB(AUDITDBP, key, &newaudit, sizeof(newaudit));
     }
@@ -462,7 +489,7 @@ void PromiseLog(char *s)
     time_t now = time(NULL);
     FILE *fout;
 
-    if (s == NULL || strlen(s) == 0)
+    if ((s == NULL) || (strlen(s) == 0))
     {
         return;
     }
@@ -476,7 +503,7 @@ void PromiseLog(char *s)
         return;
     }
 
-    fprintf(fout, "%ld,%ld: %s\n", CFSTARTTIME, now, s);
+    fprintf(fout, "%" PRIdMAX ",%" PRIdMAX ": %s\n", (intmax_t)CFSTARTTIME, (intmax_t)now, s);
     fclose(fout);
 }
 
@@ -484,8 +511,6 @@ void PromiseLog(char *s)
 
 void FatalError(char *s, ...)
 {
-    CfLock best_guess;
-
     if (s)
     {
         va_list ap;
@@ -497,61 +522,51 @@ void FatalError(char *s, ...)
         CfOut(cf_error, "", "Fatal CFEngine error: %s", buf);
     }
 
-    if (strlen(CFLOCK) > 0)
-    {
-        best_guess.lock = xstrdup(CFLOCK);
-        best_guess.last = xstrdup(CFLAST);
-        best_guess.log = xstrdup(CFLOG);
-        YieldCurrentLock(best_guess);
-    }
-
-    unlink(PIDFILE);
-    EndAudit();
-    GenericDeInitialize();
     exit(1);
 }
 
 /*****************************************************************************/
 
-void AuditStatusMessage(FILE *fp, char status)
+void AuditStatusMessage(Writer *writer, char status)
 {
     switch (status)             /* Reminder */
     {
     case CF_CHG:
-        fprintf(fp, "made a system correction");
+        WriterWriteF(writer, "made a system correction");
         break;
 
     case CF_WARN:
-        fprintf(fp, "promise not kept, no action taken");
+        WriterWriteF(writer, "promise not kept, no action taken");
         break;
 
     case CF_TIMEX:
-        fprintf(fp, "timed out");
+        WriterWriteF(writer, "timed out");
         break;
 
     case CF_FAIL:
-        fprintf(fp, "failed to make a correction");
+        WriterWriteF(writer, "failed to make a correction");
         break;
 
     case CF_DENIED:
-        fprintf(fp, "was denied access to an essential resource");
+        WriterWriteF(writer, "was denied access to an essential resource");
         break;
 
     case CF_INTERPT:
-        fprintf(fp, "was interrupted\n");
+        WriterWriteF(writer, "was interrupted\n");
         break;
 
     case CF_NOP:
-        fprintf(fp, "was applied but performed no required actions");
+        WriterWriteF(writer, "was applied but performed no required actions");
         break;
 
     case CF_UNKNOWN:
-        fprintf(fp, "was applied but status unknown");
+        WriterWriteF(writer, "was applied but status unknown");
         break;
 
     case CF_REPORT:
-        fprintf(fp, "report");
+        WriterWriteF(writer, "report");
         break;
     }
 
 }
+

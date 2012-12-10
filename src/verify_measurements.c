@@ -23,14 +23,12 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: verify_measurements.c                                               */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "promises.h"
+#include "files_names.h"
+#include "attributes.h"
+#include "cfstream.h"
 
 static int CheckMeasureSanity(Attributes a, Promise *pp);
 
@@ -57,13 +55,6 @@ void VerifyMeasurementPromise(double *this, Promise *pp)
     PromiseBanner(pp);
 
     a = GetMeasurementAttributes(pp);
-
-/*
-if (strcmp(a.measure.history_type,"weekly") == 0)
-   {
-   *(pp->donep) = true;
-   }
-*/
 
     if (!CheckMeasureSanity(a, pp))
     {
@@ -95,7 +86,7 @@ static int CheckMeasureSanity(Attributes a, Promise *pp)
     }
     else
     {
-        if (a.measure.history_type && strcmp(a.measure.history_type, "weekly") == 0)
+        if ((a.measure.history_type) && (strcmp(a.measure.history_type, "weekly") == 0))
         {
             switch (a.measure.data_type)
             {
@@ -115,7 +106,7 @@ static int CheckMeasureSanity(Attributes a, Promise *pp)
         }
     }
 
-    if (a.measure.select_line_matching && a.measure.select_line_number != CF_NOINT)
+    if ((a.measure.select_line_matching) && (a.measure.select_line_number != CF_NOINT))
     {
         cfPS(cf_error, CF_INTERPT, "", pp, a,
              "The promiser \"%s\" cannot select both a line by pattern and by number\n", pp->promiser);
@@ -129,7 +120,7 @@ static int CheckMeasureSanity(Attributes a, Promise *pp)
     }
     else
     {
-        if (!strchr(a.measure.extraction_regex, '(') && !strchr(a.measure.extraction_regex, ')'))
+        if ((!strchr(a.measure.extraction_regex, '(')) && (!strchr(a.measure.extraction_regex, ')')))
         {
             cfPS(cf_error, CF_INTERPT, "", pp, a,
                  "The extraction_regex must contain a single backreference for the extraction\n");

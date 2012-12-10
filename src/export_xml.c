@@ -23,9 +23,13 @@
 */
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
 #include "xml_writer.h"
 #include "manual.h"
+#include "files_names.h"
+#include "sort.h"
+#include "scope.h"
+#include "hashes.h"
 
 static char *MANUAL_DIRECTORY;
 
@@ -57,7 +61,7 @@ static char *MANUAL_DIRECTORY;
 
 static void XmlExportVariables(Writer *writer, const char *scope);
 static void XmlExportFunction(Writer *writer, FnCallType fn);
-static void XmlExportPromiseType(Writer *writer, SubTypeSyntax *st);
+static void XmlExportPromiseType(Writer *writer, const SubTypeSyntax *st);
 static void XmlExportControl(Writer *writer, SubTypeSyntax body);
 static void XmlExportConstraint(Writer *writer, const BodySyntax *bs);
 static void XmlExportConstraints(Writer *writer, const BodySyntax *bs);
@@ -69,7 +73,7 @@ void XmlManual(const char *mandir, FILE *fout)
 {
     Writer *writer = NULL;
     int i;
-    SubTypeSyntax *st = NULL;
+    const SubTypeSyntax *st = NULL;
 
     MANUAL_DIRECTORY = (char *) mandir;
     AddSlash(MANUAL_DIRECTORY);
@@ -103,7 +107,7 @@ void XmlManual(const char *mandir, FILE *fout)
 
 /* CONTROL */
     XmlStartTag(writer, XMLTAG_CONTROLS_ROOT, 0);
-    for (i = 0; CF_ALL_BODIES[i].btype != NULL; i++)
+    for (i = 0; CF_ALL_BODIES[i].bundle_type != NULL; i++)
     {
         XmlExportControl(writer, CF_ALL_BODIES[i]);
     }
@@ -221,16 +225,16 @@ static void XmlExportControl(Writer *writer, SubTypeSyntax type)
     char *filebuffer = NULL;
 
 /* START XML ELEMENT -- CONTROL */
-    XmlAttribute control_name_attr = { "name", type.btype };
+    XmlAttribute control_name_attr = { "name", type.bundle_type };
     XmlStartTag(writer, XMLTAG_CONTROL, 1, control_name_attr);
 
 /* XML ELEMENT -- LONG-DESCRIPTION */
-    filebuffer = ReadTexinfoFileF("control/%s_notes.texinfo", type.btype);
+    filebuffer = ReadTexinfoFileF("control/%s_notes.texinfo", type.bundle_type);
     XmlTag(writer, XMLTAG_LONGDESCRIPTION, filebuffer, 0);
     free(filebuffer);
 
 /* XML ELEMENT -- EXAMPLE */
-    filebuffer = ReadTexinfoFileF("control/%s_example.texinfo", type.btype);
+    filebuffer = ReadTexinfoFileF("control/%s_example.texinfo", type.bundle_type);
     XmlTag(writer, XMLTAG_EXAMPLE, filebuffer, 0);
     free(filebuffer);
 
@@ -243,7 +247,7 @@ static void XmlExportControl(Writer *writer, SubTypeSyntax type)
 
 /*****************************************************************************/
 
-void XmlExportPromiseType(Writer *writer, SubTypeSyntax *st)
+void XmlExportPromiseType(Writer *writer, const SubTypeSyntax *st)
 {
     int i;
     char *filebuffer = NULL;
@@ -253,20 +257,20 @@ void XmlExportPromiseType(Writer *writer, SubTypeSyntax *st)
         return;
     }
 
-    for (i = 0; st[i].btype != NULL; i++)
+    for (i = 0; st[i].bundle_type != NULL; i++)
     {
         /* START XML ELEMENT -- PROMISE TYPE */
         XmlAttribute promise_name_attr = { "name", st[i].subtype };
         if (strcmp(st[i].subtype, "*") != 0)
         {
             XmlAttribute promise_agenttype_attr = { "agent-type", NULL };
-            if (strcmp(st[i].btype, "*") == 0)
+            if (strcmp(st[i].bundle_type, "*") == 0)
             {
                 promise_agenttype_attr.value = "common";
             }
             else
             {
-                promise_agenttype_attr.value = st[i].btype;
+                promise_agenttype_attr.value = st[i].bundle_type;
             }
             XmlStartTag(writer, XMLTAG_PROMISETYPE, 2, promise_name_attr, promise_agenttype_attr);
         }
@@ -276,26 +280,26 @@ void XmlExportPromiseType(Writer *writer, SubTypeSyntax *st)
         }
 
         /* XML ELEMENT -- INTRO */
-        if (strcmp("*", st[i].btype) == 0)
+        if (strcmp("*", st[i].bundle_type) == 0)
         {
-            filebuffer = ReadTexinfoFileF("promise_common_intro.texinfo");
+            filebuffer = ReadTexinfoFileF(MANUAL_DIRECTORY, "promise_common_intro.texinfo");
         }
         else
         {
-            filebuffer = ReadTexinfoFileF("promises/%s_intro.texinfo", st[i].subtype);
+            filebuffer = ReadTexinfoFileF(MANUAL_DIRECTORY, "promises/%s_intro.texinfo", st[i].subtype);
         }
         XmlTag(writer, XMLTAG_INTRO, filebuffer, 0);
         free(filebuffer);
 
-        if (strcmp("*", st[i].btype) != 0)
+        if (strcmp("*", st[i].bundle_type) != 0)
         {
             /* XML ELEMENT -- LONG DESCRIPTION */
-            filebuffer = ReadTexinfoFileF("promises/%s_notes.texinfo", st[i].subtype);
+            filebuffer = ReadTexinfoFileF(MANUAL_DIRECTORY, "promises/%s_notes.texinfo", st[i].subtype);
             XmlTag(writer, XMLTAG_LONGDESCRIPTION, filebuffer, 0);
             free(filebuffer);
 
             /* XML ELEMENT -- EXAMPLE */
-            filebuffer = ReadTexinfoFileF("promises/%s_example.texinfo", st[i].subtype);
+            filebuffer = ReadTexinfoFileF(MANUAL_DIRECTORY, "promises/%s_example.texinfo", st[i].subtype);
             XmlTag(writer, XMLTAG_EXAMPLE, filebuffer, 0);
             free(filebuffer);
         }
@@ -367,12 +371,12 @@ void XmlExportConstraint(Writer *writer, const BodySyntax *bs)
         XmlTag(writer, XMLTAG_DESCRIPTION, bs->description, 0);
 
         /* XML ELEMENT -- LONG-DESCRIPTION */
-        filebuffer = ReadTexinfoFileF("bodyparts/%s_notes.texinfo", bs->lval);
+        filebuffer = ReadTexinfoFileF(MANUAL_DIRECTORY, "bodyparts/%s_notes.texinfo", bs->lval);
         XmlTag(writer, XMLTAG_LONGDESCRIPTION, filebuffer, 0);
         free(filebuffer);
 
         /* XML ELEMENT -- EXAMPLE */
-        filebuffer = ReadTexinfoFileF("bodyparts/%s_example.texinfo", bs->lval);
+        filebuffer = ReadTexinfoFileF(MANUAL_DIRECTORY, "bodyparts/%s_example.texinfo", bs->lval);
         XmlTag(writer, XMLTAG_EXAMPLE, filebuffer, 0);
         free(filebuffer);
     }

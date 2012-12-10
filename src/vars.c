@@ -23,19 +23,20 @@
 
 */
 
-/*******************************************************************/
-/*                                                                 */
-/* vars.c                                                          */
-/*                                                                 */
-/*******************************************************************/
+#include "vars.h"
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "constraints.h"
+#include "conversion.h"
+#include "reporting.h"
+#include "expand.h"
+#include "scope.h"
+#include "matching.h"
+#include "hashes.h"
+#include "unix.h"
+#include "cfstream.h"
 
 static int IsCf3Scalar(char *str);
 static int CompareVariableValue(Rval rval, CfAssoc *ap);
-
-/*******************************************************************/
 
 void LoadSystemConstants()
 {
@@ -46,9 +47,6 @@ void LoadSystemConstants()
     NewScalar("const", "endl", "\n", cf_str);
 /* NewScalar("const","0","\0",cf_str);  - this cannot work */
 
-#ifdef HAVE_NOVA
-    Nova_EnterpriseDiscovery();
-#endif
 }
 
 /*******************************************************************/
@@ -59,7 +57,7 @@ void ForceScalar(char *lval, char *rval)
 {
     Rval retval;
 
-    if (THIS_AGENT_TYPE != cf_agent && THIS_AGENT_TYPE != cf_know)
+    if (THIS_AGENT_TYPE != AGENT_TYPE_AGENT && THIS_AGENT_TYPE != AGENT_TYPE_KNOW)
     {
         return;
     }
@@ -123,9 +121,8 @@ void DeleteScalar(const char *scope_name, const char *lval)
 
 /*******************************************************************/
 
-void NewList(char *scope, char *lval, void *rval, enum cfdatatype dt)
+void NewList(const char *scope, const char *lval, void *rval, enum cfdatatype dt)
 {
-    char *sp1;
     Rval rvald;
 
     if (GetVariable(scope, lval, &rvald) != cf_notype)
@@ -133,8 +130,7 @@ void NewList(char *scope, char *lval, void *rval, enum cfdatatype dt)
         DeleteVariable(scope, lval);
     }
 
-    sp1 = xstrdup(lval);
-    AddVariableHash(scope, sp1, (Rval) {rval, CF_LIST}, dt, NULL, 0);
+    AddVariableHash(scope, lval, (Rval) {rval, CF_LIST}, dt, NULL, 0);
 }
 
 /*******************************************************************/
@@ -146,7 +142,7 @@ enum cfdatatype GetVariable(const char *scope, const char *lval, Rval *returnv)
     char expbuf[CF_EXPANDSIZE];
     CfAssoc *assoc;
 
-    CfDebug("\nGetVariable(%s,%s) type=(to be determined)\n", scope, lval);
+    CfDebug("GetVariable(%s,%s) type=(to be determined)\n", scope, lval);
 
     if (lval == NULL)
     {
@@ -178,7 +174,7 @@ enum cfdatatype GetVariable(const char *scope, const char *lval, Rval *returnv)
     {
         scopeid[0] = '\0';
         sscanf(sval, "%[^.].%s", scopeid, vlval);
-        CfDebug("Variable identifier %s is prefixed with scope id %s\n", vlval, scopeid);
+        CfDebug("Variable identifier \"%s\" is prefixed with scope id \"%s\"\n", vlval, scopeid);
         ptr = GetScope(scopeid);
     }
     else
@@ -186,8 +182,6 @@ enum cfdatatype GetVariable(const char *scope, const char *lval, Rval *returnv)
         strlcpy(vlval, sval, sizeof(vlval));
         strlcpy(scopeid, scope, sizeof(scopeid));
     }
-
-    CfDebug("Looking for %s.%s\n", scopeid, vlval);
 
     if (ptr == NULL)
     {
@@ -198,7 +192,7 @@ enum cfdatatype GetVariable(const char *scope, const char *lval, Rval *returnv)
 
     if (ptr == NULL)
     {
-        CfDebug("Scope for variable \"%s.%s\" does not seem to exist\n", scope, lval);
+        CfDebug("Scope \"%s\" for variable \"%s\" does not seem to exist\n", scopeid, vlval);
         /* C type system does not allow us to express the fact that returned
            value may contain immutable string. */
         *returnv = (Rval) {(char *) lval, CF_SCALAR};
@@ -214,8 +208,11 @@ enum cfdatatype GetVariable(const char *scope, const char *lval, Rval *returnv)
         CfDebug("No such variable found %s.%s\n\n", scopeid, lval);
         /* C type system does not allow us to express the fact that returned
            value may contain immutable string. */
+
+
         *returnv = (Rval) {(char *) lval, CF_SCALAR};
         return cf_notype;
+
     }
 
     CfDebug("return final variable type=%s, value={\n", CF_DATATYPES[assoc->dtype]);
@@ -232,7 +229,7 @@ enum cfdatatype GetVariable(const char *scope, const char *lval, Rval *returnv)
 
 /*******************************************************************/
 
-void DeleteVariable(char *scope, char *id)
+void DeleteVariable(const char *scope, const char *id)
 {
     Scope *ptr = GetScope(scope);
 
@@ -281,6 +278,68 @@ static int CompareVariableValue(Rval rval, CfAssoc *ap)
     }
 
     return strcmp(ap->rval.item, rval.item);
+}
+
+/*******************************************************************/
+
+void DefaultVarPromise(Promise *pp)
+
+{
+    char *regex = GetConstraintValue("if_match_regex", pp, CF_SCALAR);
+    Rval rval;
+    enum cfdatatype dt;
+    Rlist *rp;
+    bool okay = true;
+
+    dt = GetVariable("this", pp->promiser, &rval);
+
+    switch (dt)
+       {
+       case cf_str:
+       case cf_int:
+       case cf_real:
+
+           if (regex && !FullTextMatch(regex,rval.item))
+              {
+              return;
+              }
+
+           if (regex == NULL)
+              {
+              return;
+              }
+
+           break;
+           
+       case cf_slist:
+       case cf_ilist:
+       case cf_rlist:
+
+           if (regex)
+              {
+              for (rp = (Rlist *) rval.item; rp != NULL; rp = rp->next)
+                 {
+                 if (FullTextMatch(regex,rp->item))
+                    {
+                    okay = false;
+                    break;
+                    }
+                 }
+              
+              if (okay)
+                 {
+                 return;
+                 }
+              }
+           
+       break;
+       
+       default:
+           break;           
+       }
+
+    DeleteScalar(pp->bundle, pp->promiser);
+    ConvergeVarHashPromise(pp->bundle, pp, true);
 }
 
 /*******************************************************************/
@@ -392,9 +451,8 @@ bool StringContainsVar(const char *s, const char *v)
 
 /*********************************************************************/
 
-int IsCf3VarString(char *str)
+int IsCf3VarString(const char *str)
 {
-    char *sp;
     char left = 'x', right = 'x';
     int dollar = false;
     int bracks = 0, vars = 0;
@@ -406,7 +464,7 @@ int IsCf3VarString(char *str)
         return false;
     }
 
-    for (sp = str; *sp != '\0'; sp++)   /* check for varitems */
+    for (const char *sp = str; *sp != '\0'; sp++)   /* check for varitems */
     {
         switch (*sp)
         {
@@ -643,6 +701,15 @@ const char *ExtractInnerCf3VarString(const char *str, char *substr)
         if (bracks == 0)
         {
             strncpy(substr, str + 2, sp - str - 2);
+
+            if (strlen(substr) == 0)
+            {
+                char output[CF_BUFSIZE];
+                snprintf(output, CF_BUFSIZE, "Empty variable name in brackets: %s", str);
+                yyerror(output);
+                return NULL;
+            }
+
             CfDebug("Returning substring value %s\n", substr);
             return substr;
         }
@@ -857,7 +924,7 @@ int AddVariableHash(const char *scope, const char *lval, Rval rval, enum cfdatat
 
 // Look for outstanding lists in variable rvals
 
-    if (THIS_AGENT_TYPE == cf_common)
+    if (THIS_AGENT_TYPE == AGENT_TYPE_COMMON)
     {
         Rlist *listvars = NULL, *scalarvars = NULL;
 
@@ -889,8 +956,7 @@ int AddVariableHash(const char *scope, const char *lval, Rval rval, enum cfdatat
             /* Different value, bark and replace */
             if (!UnresolvedVariables(assoc, rval.rtype))
             {
-                CfOut(cf_inform, "", " !! Duplicate selection of value for variable \"%s\" in scope %s", lval,
-                      ptr->scope);
+                CfOut(cf_inform, "", " !! Duplicate selection of value for variable \"%s\" in scope %s", lval, ptr->scope);
                 if (fname)
                 {
                     CfOut(cf_inform, "", " !! Rule from %s at/before line %d\n", fname, lineno);

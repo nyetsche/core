@@ -23,14 +23,14 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: verify_databases.c                                                  */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "promises.h"
+#include "files_names.h"
+#include "conversion.h"
+#include "attributes.h"
+#include "cfstream.h"
+#include "string_lib.h"
 
 static int CheckDatabaseSanity(Attributes a, Promise *pp);
 static void VerifySQLPromise(Attributes a, Promise *pp);
@@ -49,7 +49,8 @@ static int CheckSQLDataType(char *type, char *ref_type, Promise *pp);
 static int TableExists(CfdbConn *cfdb, char *name);
 static Rlist *GetSQLTables(CfdbConn *cfdb);
 static void ListTables(int type, char *query);
-
+static int ValidateRegistryPromiser(char *s, Attributes a, Promise *pp);
+static int CheckRegistrySanity(Attributes a, Promise *pp);
 
 /*****************************************************************************/
 
@@ -79,7 +80,7 @@ void VerifyDatabasePromises(Promise *pp)
 
     if (strcmp(a.database.type, "ms_registry") == 0)
     {
-#ifdef HAVE_NOVA
+#if defined(__MINGW32__)
         VerifyRegistryPromise(a, pp);
 #endif
         return;
@@ -141,6 +142,15 @@ static void VerifySQLPromise(Attributes a, Promise *pp)
         strncpy(database, pp->promiser, CF_MAXVARSIZE - 1);
     }
 
+    if (a.database.operation == NULL)
+    {
+        cfPS(cf_error, CF_FAIL, "", pp, a ,
+             "Missing database_operation in database promise");
+        PromiseRef(cf_error, pp);
+        YieldCurrentLock(thislock);
+        return;
+    }
+
     if (strcmp(a.database.operation, "delete") == 0)
     {
         /* Just deal with one */
@@ -156,7 +166,7 @@ static void VerifySQLPromise(Attributes a, Promise *pp)
     {
         /* If we haven't said create then db should already exist */
 
-        if (a.database.operation && strcmp(a.database.operation, "create") != 0)
+        if ((a.database.operation) && (strcmp(a.database.operation, "create") != 0))
         {
             CfOut(cf_error, "", "Could not connect an existing database %s - check server configuration?\n", database);
             PromiseRef(cf_error, pp);
@@ -168,7 +178,7 @@ static void VerifySQLPromise(Attributes a, Promise *pp)
 
 /* Check change of existential constraints */
 
-    if (a.database.operation && strcmp(a.database.operation, "create") == 0)
+    if ((a.database.operation) && (strcmp(a.database.operation, "create") == 0))
     {
         CfConnectDB(&cfdb, a.database.db_server_type, a.database.db_server_host, a.database.db_server_owner,
                     a.database.db_server_password, a.database.db_connect_db);
@@ -181,7 +191,7 @@ static void VerifySQLPromise(Attributes a, Promise *pp)
 
         /* Don't drop the db if we really want to drop a table */
 
-        if (strlen(table) == 0 || (strlen(table) > 0 && strcmp(a.database.operation, "drop") != 0))
+        if ((strlen(table) == 0) || ((strlen(table) > 0) && (strcmp(a.database.operation, "drop") != 0)))
         {
             VerifyDatabasePromise(&cfdb, database, a, pp);
         }
@@ -279,9 +289,9 @@ static int VerifyDatabasePromise(CfdbConn *cfdb, char *database, Attributes a, P
         CfOut(cf_verbose, "", " !! Database \"%s\" does not seem to exist on this connection", database);
     }
 
-    if (a.database.operation && strcmp(a.database.operation, "drop") == 0)
+    if ((a.database.operation) && (strcmp(a.database.operation, "drop") == 0))
     {
-        if (a.transaction.action != cfa_warn && !DONTDO)
+        if (((a.transaction.action) != cfa_warn) && (!DONTDO))
         {
             CfOut(cf_verbose, "", " -> Attempting to delete the database %s", database);
             snprintf(query, CF_MAXVARSIZE - 1, "drop database %s", database);
@@ -295,9 +305,9 @@ static int VerifyDatabasePromise(CfdbConn *cfdb, char *database, Attributes a, P
         }
     }
 
-    if (a.database.operation && strcmp(a.database.operation, "create") == 0)
+    if ((a.database.operation) && (strcmp(a.database.operation, "create") == 0))
     {
-        if (a.transaction.action != cfa_warn && !DONTDO)
+        if (((a.transaction.action) != cfa_warn) && (!DONTDO))
         {
             CfOut(cf_verbose, "", " -> Attempting to create the database %s", database);
             snprintf(query, CF_MAXVARSIZE - 1, "create database %s", database);
@@ -321,16 +331,14 @@ static int CheckDatabaseSanity(Attributes a, Promise *pp)
     Rlist *rp;
     int retval = true, commas = 0;
 
-    if (a.database.type && strcmp(a.database.type, "ms_registry") == 0)
+    if ((a.database.type) && (strcmp(a.database.type, "ms_registry") == 0))
     {
-#ifdef HAVE_NOVA
         retval = CheckRegistrySanity(a, pp);
-#endif
     }
-    else if (a.database.type && strcmp(a.database.type, "sql") == 0)
+    else if ((a.database.type) && (strcmp(a.database.type, "sql") == 0))
     {
-        if (strchr(pp->promiser, '.') == NULL && strchr(pp->promiser, '/') == NULL
-            && strchr(pp->promiser, '\\') == NULL)
+        if ((strchr(pp->promiser, '.') == NULL) && (strchr(pp->promiser, '/') == NULL)
+            && (strchr(pp->promiser, '\\') == NULL))
         {
             if (a.database.columns)
             {
@@ -367,7 +375,7 @@ static int CheckDatabaseSanity(Attributes a, Promise *pp)
         {
             commas = CountChar(rp->item, ',');
 
-            if (commas > 2 && commas < 1)
+            if ((commas > 2) && (commas < 1))
             {
                 CfOut(cf_error, "", "SQL Column format should be NAME,TYPE[,SIZE]");
                 retval = false;
@@ -376,12 +384,12 @@ static int CheckDatabaseSanity(Attributes a, Promise *pp)
 
     }
 
-    if (a.database.operation && strcmp(a.database.operation, "create") == 0)
+    if ((a.database.operation) && (strcmp(a.database.operation, "create") == 0))
     {
     }
 
-    if (a.database.operation
-        && (strcmp(a.database.operation, "delete") == 0 || strcmp(a.database.operation, "drop") == 0))
+    if ((a.database.operation)
+        && ((strcmp(a.database.operation, "delete") == 0) || (strcmp(a.database.operation, "drop") == 0)))
     {
         if (pp->ref == NULL)
         {
@@ -392,6 +400,90 @@ static int CheckDatabaseSanity(Attributes a, Promise *pp)
     }
 
     return retval;
+}
+
+static int CheckRegistrySanity(Attributes a, Promise *pp)
+{
+    bool retval = true;
+
+    ValidateRegistryPromiser(pp->promiser, a, pp);
+
+    if ((a.database.operation) && (strcmp(a.database.operation, "create") == 0))
+    {
+        if (a.database.rows == NULL)
+        {
+            CfOut(cf_inform, "", "No row values promised for the MS registry database");
+        }
+
+        if (a.database.columns != NULL)
+        {
+            CfOut(cf_error, "", "Columns are only used to delete promised values for the MS registry database");
+            retval = false;
+        }
+    }
+
+    if ((a.database.operation)
+        && ((strcmp(a.database.operation, "delete") == 0) || (strcmp(a.database.operation, "drop") == 0)))
+    {
+        if (a.database.columns == NULL)
+        {
+            CfOut(cf_inform, "", "No columns were promised deleted in the MS registry database");
+        }
+
+        if (a.database.rows != NULL)
+        {
+            CfOut(cf_error, "", "Rows cannot be deleted in the MS registry database, only entire columns");
+            retval = false;
+        }
+    }
+
+    for (Rlist *rp = a.database.rows; rp != NULL; rp = rp->next)
+    {
+        if (CountChar(ScalarValue(rp), ',') != 2)
+        {
+            CfOut(cf_error, "", "Registry row format should be NAME,REG_SZ,VALUE, not \"%s\"", ScalarValue(rp));
+            retval = false;
+        }
+    }
+
+    for (Rlist *rp = a.database.columns; rp != NULL; rp = rp->next)
+    {
+        if (CountChar(rp->item, ',') > 0)
+        {
+            CfOut(cf_error, "", "MS registry column format should be NAME only in deletion");
+            retval = false;
+        }
+    }
+
+    return retval;
+}
+
+static int ValidateRegistryPromiser(char *key, Attributes a, Promise *pp)
+{
+    static char *valid[] = { "HKEY_CLASSES_ROOT", "HKEY_CURRENT_CONFIG",
+        "HKEY_CURRENT_USER", "HKEY_LOCAL_MACHINE", "HKEY_USERS", NULL
+    };
+    char root_key[CF_MAXVARSIZE];
+    char *sp;
+    int i;
+
+    /* First remove the root key */
+
+    strncpy(root_key, key, CF_MAXVARSIZE - 1);
+    sp = strchr(root_key, '\\');
+    *sp = '\0';
+
+    for (i = 0; valid[i] != NULL; i++)
+    {
+        if (strcmp(root_key, valid[i]) == 0)
+        {
+            return true;
+        }
+    }
+
+    CfOut(cf_error, "", "Non-editable registry prefix \"%s\"", root_key);
+    PromiseRef(cf_error, pp);
+    return false;
 }
 
 /*****************************************************************************/
@@ -423,9 +515,9 @@ static int VerifyTablePromise(CfdbConn *cfdb, char *table_path, Rlist *columns, 
     {
         CfOut(cf_error, "", " !! The database did not contain the promised table \"%s\"\n", table_path);
 
-        if (a.database.operation && strcmp(a.database.operation, "create") == 0)
+        if ((a.database.operation) && (strcmp(a.database.operation, "create") == 0))
         {
-            if (!DONTDO && a.transaction.action != cfa_warn)
+            if ((!DONTDO) && ((a.transaction.action) != cfa_warn))
             {
                 cfPS(cf_error, CF_CHG, "", pp, a, " -> Database.table %s doesn't seem to exist, creating\n",
                      table_path);
@@ -474,8 +566,9 @@ static int VerifyTablePromise(CfdbConn *cfdb, char *table_path, Rlist *columns, 
         type[0] = '\0';
         size = CF_NOINT;
 
-        strncpy(name, CfFetchColumn(cfdb, 0), CF_MAXVARSIZE - 1);
-        strncpy(type, ToLowerStr(CfFetchColumn(cfdb, 1)), CF_MAXVARSIZE - 1);
+        strlcpy(name, CfFetchColumn(cfdb, 0), CF_MAXVARSIZE);
+        strlcpy(type, CfFetchColumn(cfdb, 1), CF_MAXVARSIZE);
+        ToLowerStrInplace(type);
         sizestr = CfFetchColumn(cfdb, 2);
 
         if (sizestr)
@@ -485,7 +578,7 @@ static int VerifyTablePromise(CfdbConn *cfdb, char *table_path, Rlist *columns, 
 
         CfOut(cf_verbose, "", "    ... discovered column (%s,%s,%d)", name, type, size);
 
-        if (sizestr && size == CF_NOINT)
+        if (sizestr && (size == CF_NOINT))
         {
             cfPS(cf_verbose, CF_NOP, "", pp, a,
                  " !! Integer size of SQL datatype could not be determined or was not specified - invalid promise.");
@@ -531,7 +624,7 @@ static int VerifyTablePromise(CfdbConn *cfdb, char *table_path, Rlist *columns, 
             cfPS(cf_error, CF_FAIL, "", pp, a,
                  "Column \"%s\" found in database.table \"%s\" is not part of its promise.", name, table_path);
 
-            if (a.database.operation && strcmp(a.database.operation, "drop") == 0)
+            if ((a.database.operation) && (strcmp(a.database.operation, "drop") == 0))
             {
                 cfPS(cf_error, CF_FAIL, "", pp, a,
                      "Cfengine will not promise to repair this, as the operation is potentially too destructive.");
@@ -546,7 +639,7 @@ static int VerifyTablePromise(CfdbConn *cfdb, char *table_path, Rlist *columns, 
 
 /* Now look for deviations - only if we have promised to create missing */
 
-    if (a.database.operation && strcmp(a.database.operation, "drop") == 0)
+    if ((a.database.operation) && (strcmp(a.database.operation, "drop") == 0))
     {
         return retval;
     }
@@ -560,7 +653,7 @@ static int VerifyTablePromise(CfdbConn *cfdb, char *table_path, Rlist *columns, 
                 CfOut(cf_error, "", " !! Promised column \"%s\" missing from database table %s", name_table[i],
                       pp->promiser);
 
-                if (!DONTDO && a.transaction.action != cfa_warn)
+                if ((!DONTDO) && ((a.transaction.action) != cfa_warn))
                 {
                     if (size_table[i] > 0)
                     {
@@ -845,7 +938,7 @@ static void DeleteSQLColumns(char **name_table, char **type_table, int *size_tab
 {
     int i;
 
-    if (name_table == NULL || type_table == NULL || size_table == NULL)
+    if ((name_table == NULL) || (type_table == NULL) || (size_table == NULL))
     {
         return;
     }
@@ -884,8 +977,8 @@ static int CheckSQLDataType(char *type, char *ref_type, Promise *pp)
 
     for (i = 0; aliases[i][0] != NULL; i++)
     {
-        if (strcmp(ref_type, aliases[i][0]) == 0 || strcmp(ref_type, aliases[i][1]) == 0
-            || strcmp(type, aliases[i][0]) == 0 || strcmp(type, aliases[i][1]) == 0)
+        if ((strcmp(ref_type, aliases[i][0]) == 0) || (strcmp(ref_type, aliases[i][1]) == 0)
+            || (strcmp(type, aliases[i][0]) == 0) || (strcmp(type, aliases[i][1]) == 0))
         {
             if ((strcmp(type, ref_type) != 0) && (strcmp(aliases[i][0], ref_type) != 0))
             {

@@ -23,17 +23,30 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: files_operators.c                                                   */
-/*                                                                           */
-/*****************************************************************************/
+#include "files_operators.h"
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
-
+#include "acl.h"
+#include "env_context.h"
+#include "constraints.h"
+#include "promises.h"
 #include "dir.h"
 #include "dbm_api.h"
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "files_hashes.h"
+#include "files_repository.h"
+#include "vars.h"
+#include "item_lib.h"
+#include "conversion.h"
+#include "expand.h"
+#include "scope.h"
+#include "matching.h"
+#include "attributes.h"
+#include "cfstream.h"
+#include "client_code.h"
+#include "pipes.h"
+
+#include <assert.h>
 
 extern AgentConnection *COMS;
 
@@ -43,69 +56,18 @@ static void TruncateFile(char *name);
 static int VerifyFinderType(char *file, struct stat *statbuf, Attributes a, Promise *pp);
 #endif
 static int TransformFile(char *file, Attributes attr, Promise *pp);
-static void VerifyName(char *path, struct stat *sb, Attributes attr, Promise *pp);
+static void VerifyName(char *path, struct stat *sb, Attributes attr, Promise *pp, const ReportContext *report_context);
 static void VerifyDelete(char *path, struct stat *sb, Attributes attr, Promise *pp);
-static void DeleteDirectoryTree(char *path, Promise *pp);
+static void DeleteDirectoryTree(char *path, Promise *pp, const ReportContext *report_context);
 
 #ifndef MINGW
 static void VerifySetUidGid(char *file, struct stat *dstat, mode_t newperm, Promise *pp, Attributes attr);
-static int Unix_VerifyOwner(char *file, Promise *pp, Attributes attr, struct stat *sb);
-static void Unix_VerifyCopiedFileAttributes(char *file, struct stat *dstat, struct stat *sstat, Attributes attr,
-                                            Promise *pp);
-static void Unix_VerifyFileAttributes(char *file, struct stat *dstat, Attributes attr, Promise *pp);
 #endif
-
-/*******************************************************************/
-/* File API - OS function mapping                                  */
-/*******************************************************************/
-
-void CreateEmptyFile(char *name)
-{
-#ifdef MINGW
-    NovaWin_CreateEmptyFile(name);
-#else
-    Unix_CreateEmptyFile(name);
-#endif
-}
 
 /*****************************************************************************/
 
-int VerifyOwner(char *file, Promise *pp, Attributes attr, struct stat *sb)
-{
-#ifdef MINGW
-    return NovaWin_VerifyOwner(file, pp, attr);
-#else
-    return Unix_VerifyOwner(file, pp, attr, sb);
-#endif
-}
-
-/*****************************************************************************/
-
-void VerifyFileAttributes(char *file, struct stat *dstat, Attributes attr, Promise *pp)
-{
-#ifdef MINGW
-    NovaWin_VerifyFileAttributes(file, dstat, attr, pp);
-#else
-    Unix_VerifyFileAttributes(file, dstat, attr, pp);
-#endif
-}
-
-/*****************************************************************************/
-
-void VerifyCopiedFileAttributes(char *file, struct stat *dstat, struct stat *sstat, Attributes attr, Promise *pp)
-{
-#ifdef MINGW
-    NovaWin_VerifyCopiedFileAttributes(file, dstat, attr, pp);
-#else
-    Unix_VerifyCopiedFileAttributes(file, dstat, sstat, attr, pp);
-#endif
-}
-
-/*******************************************************************/
-/* End file API                                                    */
-/*******************************************************************/
-
-int VerifyFileLeaf(char *path, struct stat *sb, Attributes attr, Promise *pp)
+int VerifyFileLeaf(char *path, struct stat *sb, Attributes attr, Promise *pp,
+                   const ReportContext *report_context)
 {
 /* Here we can assume that we are in the parent directory of the leaf */
 
@@ -133,7 +95,7 @@ int VerifyFileLeaf(char *path, struct stat *sb, Attributes attr, Promise *pp)
     {
         if (attr.haverename)
         {
-            VerifyName(path, sb, attr, pp);
+            VerifyName(path, sb, attr, pp, report_context);
         }
 
         if (attr.havedelete)
@@ -156,7 +118,7 @@ int VerifyFileLeaf(char *path, struct stat *sb, Attributes attr, Promise *pp)
         }
         else
         {
-            VerifyFileAttributes(path, sb, attr, pp);
+            VerifyFileAttributes(path, sb, attr, pp, report_context);
         }
     }
 
@@ -193,7 +155,8 @@ FILE *CreateEmptyStream()
 
 /*****************************************************************************/
 
-int CfCreateFile(char *file, Promise *pp, Attributes attr)
+int CfCreateFile(char *file, Promise *pp, Attributes attr,
+                 const ReportContext *report_context)
 {
     int fd;
 
@@ -214,7 +177,7 @@ int CfCreateFile(char *file, Promise *pp, Attributes attr)
 
         if (!DONTDO && attr.transaction.action != cfa_warn)
         {
-            if (!MakeParentDirectory(file, attr.move_obstructions))
+            if (!MakeParentDirectory(file, attr.move_obstructions, report_context))
             {
                 cfPS(cf_inform, CF_FAIL, "creat", pp, attr, " !! Error creating directories for %s\n", file);
                 return false;
@@ -246,7 +209,7 @@ int CfCreateFile(char *file, Promise *pp, Attributes attr)
                 filemode = attr.perms.plus & ~(attr.perms.minus);
             }
 
-            MakeParentDirectory(file, attr.move_obstructions);
+            MakeParentDirectory(file, attr.move_obstructions, report_context);
 
             if ((fd = creat(file, filemode)) == -1)
             {
@@ -273,11 +236,19 @@ int CfCreateFile(char *file, Promise *pp, Attributes attr)
 
 /*****************************************************************************/
 
-int ScheduleCopyOperation(char *destination, Attributes attr, Promise *pp)
+int ScheduleCopyOperation(char *destination, Attributes attr, Promise *pp,
+                          const ReportContext *report_context)
 {
     AgentConnection *conn = NULL;
 
-    CfOut(cf_verbose, "", " -> Copy file %s from %s check\n", destination, attr.copy.source);
+    if (!attr.copy.source)
+    {
+        CfOut(cf_verbose, "", " -> Copy file %s check\n", destination);
+    }
+    else
+    {
+        CfOut(cf_verbose, "", " -> Copy file %s from %s check\n", destination, attr.copy.source);
+    }
 
     if (attr.copy.servers == NULL || strcmp(attr.copy.servers->item, "localhost") == 0)
     {
@@ -298,11 +269,11 @@ int ScheduleCopyOperation(char *destination, Attributes attr, Promise *pp)
     pp->conn = conn;            /* for ease of access */
     pp->cache = NULL;
 
-    CopyFileSources(destination, attr, pp);
+    CopyFileSources(destination, attr, pp, report_context);
 
     if (attr.transaction.background)
     {
-        ServerDisconnection(conn);
+        DisconnectServer(conn);
     }
     else
     {
@@ -314,7 +285,8 @@ int ScheduleCopyOperation(char *destination, Attributes attr, Promise *pp)
 
 /*****************************************************************************/
 
-int ScheduleLinkChildrenOperation(char *destination, char *source, int recurse, Attributes attr, Promise *pp)
+int ScheduleLinkChildrenOperation(char *destination, char *source, int recurse, Attributes attr, Promise *pp,
+                                  const ReportContext *report_context)
 {
     Dir *dirh;
     const struct dirent *dirp;
@@ -338,7 +310,7 @@ int ScheduleLinkChildrenOperation(char *destination, char *source, int recurse, 
 
     snprintf(promiserpath, CF_BUFSIZE, "%s/.", destination);
 
-    if ((ret == -1 || !S_ISDIR(lsb.st_mode)) && !CfCreateFile(promiserpath, pp, attr))
+    if ((ret == -1 || !S_ISDIR(lsb.st_mode)) && !CfCreateFile(promiserpath, pp, attr, report_context))
     {
         CfOut(cf_error, "", "Cannot promise to link multiple files to children of %s as it is not a directory!",
               destination);
@@ -395,11 +367,11 @@ int ScheduleLinkChildrenOperation(char *destination, char *source, int recurse, 
 
         if ((attr.recursion.depth > recurse) && (lstat(sourcepath, &lsb) != -1) && S_ISDIR(lsb.st_mode))
         {
-            ScheduleLinkChildrenOperation(promiserpath, sourcepath, recurse + 1, attr, pp);
+            ScheduleLinkChildrenOperation(promiserpath, sourcepath, recurse + 1, attr, pp, report_context);
         }
         else
         {
-            ScheduleLinkOperation(promiserpath, sourcepath, attr, pp);
+            ScheduleLinkOperation(promiserpath, sourcepath, attr, pp, report_context);
         }
     }
 
@@ -409,7 +381,8 @@ int ScheduleLinkChildrenOperation(char *destination, char *source, int recurse, 
 
 /*****************************************************************************/
 
-int ScheduleLinkOperation(char *destination, char *source, Attributes attr, Promise *pp)
+int ScheduleLinkOperation(char *destination, char *source, Attributes attr, Promise *pp,
+                          const ReportContext *report_context)
 {
     const char *lastnode;
 
@@ -418,23 +391,23 @@ int ScheduleLinkOperation(char *destination, char *source, Attributes attr, Prom
     if (MatchRlistItem(attr.link.copy_patterns, lastnode))
     {
         CfOut(cf_verbose, "", " -> Link %s matches copy_patterns\n", destination);
-        VerifyCopy(attr.link.source, destination, attr, pp);
+        VerifyCopy(attr.link.source, destination, attr, pp, report_context);
         return true;
     }
 
     switch (attr.link.link_type)
     {
     case cfa_symlink:
-        VerifyLink(destination, source, attr, pp);
+        VerifyLink(destination, source, attr, pp, report_context);
         break;
     case cfa_hardlink:
-        VerifyHardLink(destination, source, attr, pp);
+        VerifyHardLink(destination, source, attr, pp, report_context);
         break;
     case cfa_relative:
-        VerifyRelativeLink(destination, source, attr, pp);
+        VerifyRelativeLink(destination, source, attr, pp, report_context);
         break;
     case cfa_absolute:
-        VerifyAbsoluteLink(destination, source, attr, pp);
+        VerifyAbsoluteLink(destination, source, attr, pp, report_context);
         break;
     default:
         CfOut(cf_error, "", "Unknown link type - should not happen.\n");
@@ -444,108 +417,12 @@ int ScheduleLinkOperation(char *destination, char *source, Attributes attr, Prom
     return true;
 }
 
-/*****************************************************************************/
-
-int ScheduleEditOperation(char *filename, Attributes a, Promise *pp)
-{
-    Bundle *bp;
-    void *vp;
-    FnCall *fp;
-    char *edit_bundle_name = NULL, lockname[CF_BUFSIZE];
-    Rlist *params;
-    int retval = false;
-    CfLock thislock;
-
-    snprintf(lockname, CF_BUFSIZE - 1, "fileedit-%s", filename);
-    thislock = AcquireLock(lockname, VUQNAME, CFSTARTTIME, a, pp, false);
-
-    if (thislock.lock == NULL)
-    {
-        return false;
-    }
-
-    pp->edcontext = NewEditContext(filename, a, pp);
-
-    if (pp->edcontext == NULL)
-    {
-        cfPS(cf_error, CF_FAIL, "", pp, a, "File %s was marked for editing but could not be opened\n", filename);
-        FinishEditContext(pp->edcontext, a, pp);
-        YieldCurrentLock(thislock);
-        return false;
-    }
-
-    if (a.haveeditline)
-    {
-        if ((vp = GetConstraintValue("edit_line", pp, CF_FNCALL)))
-        {
-            fp = (FnCall *) vp;
-            edit_bundle_name = fp->name;
-            params = fp->args;
-        }
-        else if ((vp = GetConstraintValue("edit_line", pp, CF_SCALAR)))
-        {
-            edit_bundle_name = (char *) vp;
-            params = NULL;
-        }
-        else
-        {
-            FinishEditContext(pp->edcontext, a, pp);
-            YieldCurrentLock(thislock);
-            return false;
-        }
-
-        CfOut(cf_verbose, "", " -> Handling file edits in edit_line bundle %s\n", edit_bundle_name);
-
-        // add current filename to context - already there?
-
-        if ((bp = GetBundle(edit_bundle_name, "edit_line")))
-        {
-            BannerSubBundle(bp, params);
-
-            DeleteScope(bp->name);
-            NewScope(bp->name);
-            HashVariables(bp->name);
-
-            AugmentScope(bp->name, bp->args, params);
-            PushPrivateClassContext();
-            retval = ScheduleEditLineOperations(filename, bp, a, pp);
-            PopPrivateClassContext();
-            DeleteScope(bp->name);
-        }
-    }
-
-    if (a.template)
-    {
-        if ((bp = MakeTemporaryBundleFromTemplate(a,pp)))
-        {
-            BannerSubBundle(bp,params);
-
-            DeleteScope(bp->name);
-            NewScope(bp->name);
-            HashVariables(bp->name);
-
-            PushPrivateClassContext();
-            retval = ScheduleEditLineOperations(filename,bp,a,pp);
-            PopPrivateClassContext();
-            DeleteScope(bp->name);
-        }
-        // FIXME: why it crashes? DeleteBundles(bp);
-    }
-
-    FinishEditContext(pp->edcontext, a, pp);
-    YieldCurrentLock(thislock);
-    return retval;
-}
 
 /*****************************************************************************/
 /* Level                                                                     */
 /*****************************************************************************/
 
-/*****************************************************************************/
-/* Level                                                                     */
-/*****************************************************************************/
-
-int MoveObstruction(char *from, Attributes attr, Promise *pp)
+int MoveObstruction(char *from, Attributes attr, Promise *pp, const ReportContext *report_context)
 {
     struct stat sb;
     char stamp[CF_BUFSIZE], saved[CF_BUFSIZE];
@@ -571,7 +448,7 @@ int MoveObstruction(char *from, Attributes attr, Promise *pp)
 
             if (attr.copy.backup == cfa_timestamp || attr.edits.backup == cfa_timestamp)
             {
-                sprintf(stamp, "_%jd_%s", (intmax_t) CFSTARTTIME, CanonifyName(cf_ctime(&now_stamp)));
+                snprintf(stamp, CF_BUFSIZE, "_%jd_%s", (intmax_t) CFSTARTTIME, CanonifyName(cf_ctime(&now_stamp)));
                 strcat(saved, stamp);
             }
 
@@ -585,7 +462,7 @@ int MoveObstruction(char *from, Attributes attr, Promise *pp)
                 return false;
             }
 
-            if (ArchiveToRepository(saved, attr, pp))
+            if (ArchiveToRepository(saved, attr, pp, report_context))
             {
                 unlink(saved);
             }
@@ -605,7 +482,7 @@ int MoveObstruction(char *from, Attributes attr, Promise *pp)
             saved[0] = '\0';
             strcpy(saved, from);
 
-            sprintf(stamp, "_%jd_%s", (intmax_t) CFSTARTTIME, CanonifyName(cf_ctime(&now_stamp)));
+            snprintf(stamp, CF_BUFSIZE, "_%jd_%s", (intmax_t) CFSTARTTIME, CanonifyName(cf_ctime(&now_stamp)));
             strcat(saved, stamp);
             strcat(saved, CF_SAVED);
             strcat(saved, ".dir");
@@ -741,7 +618,8 @@ static int VerifyFinderType(char *file, struct stat *statbuf, Attributes a, Prom
 /* Level                                                             */
 /*********************************************************************/
 
-static void VerifyName(char *path, struct stat *sb, Attributes attr, Promise *pp)
+static void VerifyName(char *path, struct stat *sb, Attributes attr, Promise *pp,
+                       const ReportContext *report_context)
 {
     mode_t newperm;
     struct stat dsb;
@@ -753,7 +631,7 @@ static void VerifyName(char *path, struct stat *sb, Attributes attr, Promise *pp
     }
     else
     {
-        if (attr.rename.rotate == CF_NOINT)
+        if (attr.rename.disable)
         {
             CfOut(cf_inform, "", " !! Warning - file object %s exists, contrary to promise\n", path);
         }
@@ -897,7 +775,7 @@ static void VerifyName(char *path, struct stat *sb, Attributes attr, Promise *pp
                          newname, (uintmax_t)newperm);
                 }
 
-                if (ArchiveToRepository(newname, attr, pp))
+                if (ArchiveToRepository(newname, attr, pp, report_context))
                 {
                     unlink(newname);
                 }
@@ -1054,7 +932,7 @@ void TouchFile(char *path, struct stat *sb, Attributes attr, Promise *pp)
 
 /*********************************************************************/
 
-void VerifyFileIntegrity(char *file, Attributes attr, Promise *pp)
+void VerifyFileIntegrity(char *file, Attributes attr, Promise *pp, const ReportContext *report_context)
 {
     unsigned char digest1[EVP_MAX_MD_SIZE + 1];
     unsigned char digest2[EVP_MAX_MD_SIZE + 1];
@@ -1099,13 +977,13 @@ void VerifyFileIntegrity(char *file, Attributes attr, Promise *pp)
 
     if (changed)
     {
-        NewPersistentContext("checksum_alerts", CF_PERSISTENCE, cfpreserve);
-        LogHashChange(file);
+        NewPersistentContext(pp->namespace, "checksum_alerts", CF_PERSISTENCE, cfpreserve);
+        LogHashChange(file, cf_file_content_changed, "Content changed", pp);
     }
 
     if (attr.change.report_diffs)
     {
-        LogFileChange(file, changed, attr, pp);
+        LogFileChange(file, changed, attr, pp, report_context);
     }
 }
 
@@ -1181,10 +1059,15 @@ void VerifyFileChanges(char *file, struct stat *sb, Attributes attr, Promise *pp
 
     if (cmpsb.st_mode != sb->st_mode)
     {
-        snprintf(message, CF_BUFSIZE - 1, "ALERT: Permissions for %s changed %o -> %o", file, cmpsb.st_mode,
-                 sb->st_mode);
+        snprintf(message, CF_BUFSIZE - 1, "ALERT: Permissions for %s changed %jo -> %jo", file,
+                 (uintmax_t)cmpsb.st_mode, (uintmax_t)sb->st_mode);
         CfOut(cf_error, "", "%s", message);
-        LogHashChange(message + strlen("ALERT: "));
+
+        char msg_temp[CF_MAXVARSIZE] = { 0 };
+        snprintf(msg_temp, sizeof(msg_temp), "Permission: %jo -> %jo",
+                 (uintmax_t)cmpsb.st_mode, (uintmax_t)sb->st_mode);
+
+        LogHashChange(file, cf_file_stats_changed, msg_temp, pp);
     }
 
     if (cmpsb.st_uid != sb->st_uid)
@@ -1192,7 +1075,12 @@ void VerifyFileChanges(char *file, struct stat *sb, Attributes attr, Promise *pp
         snprintf(message, CF_BUFSIZE - 1, "ALERT: owner for %s changed %jd -> %jd", file, (uintmax_t) cmpsb.st_uid,
                  (uintmax_t) sb->st_uid);
         CfOut(cf_error, "", "%s", message);
-        LogHashChange(message + strlen("ALERT: "));
+
+        char msg_temp[CF_MAXVARSIZE] = { 0 };
+        snprintf(msg_temp, sizeof(msg_temp), "Owner: %jd -> %jd",
+                 (uintmax_t)cmpsb.st_uid, (uintmax_t)sb->st_uid);
+
+        LogHashChange(file, cf_file_stats_changed, msg_temp, pp);
     }
 
     if (cmpsb.st_gid != sb->st_gid)
@@ -1200,7 +1088,12 @@ void VerifyFileChanges(char *file, struct stat *sb, Attributes attr, Promise *pp
         snprintf(message, CF_BUFSIZE - 1, "ALERT: group for %s changed %jd -> %jd", file, (uintmax_t) cmpsb.st_gid,
                  (uintmax_t) sb->st_gid);
         CfOut(cf_error, "", "%s", message);
-        LogHashChange(message + strlen("ALERT: "));
+
+        char msg_temp[CF_MAXVARSIZE] = { 0 };
+        snprintf(msg_temp, sizeof(msg_temp), "Group: %jd -> %jd",
+                 (uintmax_t)cmpsb.st_gid, (uintmax_t)sb->st_gid);
+
+        LogHashChange(file, cf_file_stats_changed, msg_temp, pp);
     }
 
     if (cmpsb.st_dev != sb->st_dev)
@@ -1329,7 +1222,33 @@ static int TransformFile(char *file, Attributes attr, Promise *pp)
 
 /*******************************************************************/
 
-int MakeParentDirectory(char *parentandchild, int force)
+int MakeParentDirectory2(char *parentandchild, int force, const ReportContext *report_context, bool enforce_promise)
+/**
+ * Like MakeParentDirectory, but honours warn-only and dry-run mode.
+ * We should eventually migrate to this function to avoid making changes
+ * in these scenarios.
+ **/
+{
+    if(enforce_promise)
+    {
+        return MakeParentDirectory(parentandchild, force, report_context);
+    }
+
+    char *parent_dir = GetParentDirectoryCopy(parentandchild);
+
+    bool parent_exists = IsDir(parent_dir);
+
+    free(parent_dir);
+
+    return parent_exists;
+}
+
+/*******************************************************************/
+
+int MakeParentDirectory(char *parentandchild, int force, const ReportContext *report_context)
+/**
+ * Please consider using MakeParentDirectory2() instead.
+ **/
 {
     char *spc, *sp;
     char currentpath[CF_BUFSIZE];
@@ -1412,7 +1331,7 @@ int MakeParentDirectory(char *parentandchild, int force)
                 {
                     if (S_ISDIR(sbuf.st_mode))
                     {
-                        DeleteDirectoryTree(currentpath, NULL);
+                        DeleteDirectoryTree(currentpath, NULL, report_context);
                     }
                     else
                     {
@@ -1468,7 +1387,7 @@ int MakeParentDirectory(char *parentandchild, int force)
             }
             else if (cfstat(currentpath, &statbuf) == -1)
             {
-                CfDebug("cfengine: Making directory %s, mode %jo\n", currentpath, (uintmax_t)DEFAULTMODE);
+                CfDebug("cfengine: Making directory %s, mode %" PRIoMAX "\n", currentpath, (uintmax_t)DEFAULTMODE);
 
                 if (!DONTDO)
                 {
@@ -1548,13 +1467,32 @@ static void TruncateFile(char *name)
 }
 
 /*********************************************************************/
+static char FileStateToChar(FileState status)
+{
+    switch(status)
+    {
+    case cf_file_new:
+        return 'N';
 
-void LogHashChange(char *file)
+    case cf_file_removed:
+        return 'R';
+
+    case cf_file_content_changed:
+        return 'C';
+
+    case cf_file_stats_changed:
+        return 'S';
+
+    default:
+        FatalError("Invalid Filechange status supplied");
+    }
+}
+/*********************************************************************/
+void LogHashChange(char *file, FileState status, char *msg, Promise *pp)
 {
     FILE *fp;
     char fname[CF_BUFSIZE];
     time_t now = time(NULL);
-    struct stat sb;
     mode_t perm = 0600;
     static char prevFile[CF_MAXVARSIZE] = { 0 };
 
@@ -1568,10 +1506,11 @@ void LogHashChange(char *file)
 
 /* This is inefficient but we don't want to lose any data */
 
-    snprintf(fname, CF_BUFSIZE, "%s/state/%s", CFWORKDIR, CF_FILECHANGE);
+    snprintf(fname, CF_BUFSIZE, "%s/state/%s", CFWORKDIR, CF_FILECHANGE_NEW);
     MapName(fname);
 
 #ifndef MINGW
+    struct stat sb;
     if (cfstat(fname, &sb) != -1)
     {
         if (sb.st_mode & (S_IWGRP | S_IWOTH))
@@ -1587,7 +1526,9 @@ void LogHashChange(char *file)
         return;
     }
 
-    fprintf(fp, "%ld,%s\n", (long) now, file);
+    const char *handle = PromiseID(pp);
+
+    fprintf(fp, "%ld,%s,%s,%c,%s\n", (long) now, handle, file, FileStateToChar(status), msg);
     fclose(fp);
 
     cf_chmod(fname, perm);
@@ -1600,8 +1541,6 @@ void RotateFiles(char *name, int number)
     int i, fd;
     struct stat statbuf;
     char from[CF_BUFSIZE], to[CF_BUFSIZE];
-    Attributes attr = { {0} };
-    Promise dummyp = { 0 };
 
     if (IsItemIn(ROTATED, name))
     {
@@ -1660,11 +1599,8 @@ void RotateFiles(char *name, int number)
     }
 
     snprintf(to, CF_BUFSIZE, "%s.1", name);
-    memset(&dummyp, 0, sizeof(dummyp));
-    memset(&attr, 0, sizeof(attr));
-    dummyp.this_server = "localdisk";
 
-    if (CopyRegularFileDisk(name, to, attr, &dummyp) == -1)
+    if (CopyRegularFileDisk(name, to, false) == -1)
     {
         CfDebug("cfengine: copy failed in RotateFiles %s -> %s\n", name, to);
         return;
@@ -1690,7 +1626,7 @@ void RotateFiles(char *name, int number)
 /* Level                                                           */
 /*******************************************************************/
 
-static void DeleteDirectoryTree(char *path, Promise *pp)
+static void DeleteDirectoryTree(char *path, Promise *pp, const ReportContext *report_context)
 {
     Promise promise = { 0 };
     char s[CF_MAXVARSIZE];
@@ -1727,17 +1663,25 @@ static void DeleteDirectoryTree(char *path, Promise *pp)
 
     snprintf(s, CF_MAXVARSIZE, "0,%ld", (long) now);
 
-    AppendConstraint(&(promise.conlist), "action", (Rval) {"true", CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "ifelapsed", (Rval) {"0", CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "delete", (Rval) {"true", CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "dirlinks", (Rval) {"delete", CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "rmdirs", (Rval) {"true", CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "depth_search", (Rval) {"true", CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "depth", (Rval) {"inf", CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "file_select", (Rval) {"true", CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "mtime", (Rval) {s, CF_SCALAR}, "any", false);
-    AppendConstraint(&(promise.conlist), "file_result", (Rval) {"mtime", CF_SCALAR}, "any", false);
-    VerifyFilePromise(promise.promiser, &promise);
+    ConstraintAppendToPromise(&promise, "action", (Rval) {"true", CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "ifelapsed", (Rval) {"0", CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "delete", (Rval) {"true", CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "dirlinks", (Rval) {"delete", CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "rmdirs", (Rval) {"true", CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "depth_search", (Rval) {"true", CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "depth", (Rval) {"inf", CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "file_select", (Rval) {"true", CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "mtime", (Rval) {s, CF_SCALAR}, "any", false);
+    ConstraintAppendToPromise(&promise, "file_result", (Rval) {"mtime", CF_SCALAR}, "any", false);
+
+    struct stat sb;
+    lstat(path, &sb);
+
+    Attributes a = GetFilesAttributes(&promise);
+    SetSearchDevice(&sb, &promise);
+
+    DepthSearch(promise.promiser, &sb, 0, a, &promise, report_context);
+
     rmdir(path);
 }
 
@@ -1834,7 +1778,7 @@ static void VerifySetUidGid(char *file, struct stat *dstat, mode_t newperm, Prom
 
 /*****************************************************************************/
 
-static int Unix_VerifyOwner(char *file, Promise *pp, Attributes attr, struct stat *sb)
+int VerifyOwner(char *file, Promise *pp, Attributes attr, struct stat *sb)
 {
     struct passwd *pw;
     struct group *gp;
@@ -1844,7 +1788,7 @@ static int Unix_VerifyOwner(char *file, Promise *pp, Attributes attr, struct sta
     uid_t uid = CF_SAME_OWNER;
     gid_t gid = CF_SAME_GROUP;
 
-    CfDebug("Unix_VerifyOwner: %jd\n", (uintmax_t) sb->st_uid);
+    CfDebug("VerifyOwner: %" PRIdMAX "\n", (uintmax_t) sb->st_uid);
 
     for (ulp = attr.perms.owners; ulp != NULL; ulp = ulp->next)
     {
@@ -1918,12 +1862,12 @@ static int Unix_VerifyOwner(char *file, Promise *pp, Attributes attr, struct sta
             {
                 if (uid != CF_SAME_OWNER)
                 {
-                    CfDebug("(Change owner to uid %ju if possible)\n", (uintmax_t)uid);
+                    CfDebug("(Change owner to uid %" PRIuMAX " if possible)\n", (uintmax_t)uid);
                 }
 
                 if (gid != CF_SAME_GROUP)
                 {
-                    CfDebug("Change group to gid %ju if possible)\n", (uintmax_t)gid);
+                    CfDebug("Change group to gid %" PRIuMAX " if possible)\n", (uintmax_t)gid);
                 }
             }
 
@@ -2154,7 +2098,8 @@ GidList *MakeGidList(char *gidnames)
 
 /*****************************************************************************/
 
-static void Unix_VerifyFileAttributes(char *file, struct stat *dstat, Attributes attr, Promise *pp)
+void VerifyFileAttributes(char *file, struct stat *dstat, Attributes attr, Promise *pp,
+                          const ReportContext *report_context)
 {
     mode_t newperm = dstat->st_mode, maskvalue;
 
@@ -2171,7 +2116,7 @@ static void Unix_VerifyFileAttributes(char *file, struct stat *dstat, Attributes
         newperm |= attr.perms.plus;
         newperm &= ~(attr.perms.minus);
 
-        CfDebug("Unix_VerifyFileAttributes(%s -> %jo)\n", file, (uintmax_t)newperm);
+        CfDebug("VerifyFileAttributes(%s -> %" PRIoMAX ")\n", file, (uintmax_t)newperm);
 
         /* directories must have x set if r set, regardless  */
 
@@ -2219,7 +2164,7 @@ static void Unix_VerifyFileAttributes(char *file, struct stat *dstat, Attributes
 
     if (attr.havechange && S_ISREG(dstat->st_mode))
     {
-        VerifyFileIntegrity(file, attr, pp);
+        VerifyFileIntegrity(file, attr, pp, report_context);
     }
 
     if (attr.havechange)
@@ -2243,12 +2188,12 @@ static void Unix_VerifyFileAttributes(char *file, struct stat *dstat, Attributes
 
     if ((newperm & 07777) == (dstat->st_mode & 07777))  /* file okay */
     {
-        CfDebug("File okay, newperm = %jo, stat = %jo\n", (uintmax_t)(newperm & 07777), (uintmax_t)(dstat->st_mode & 07777));
+        CfDebug("File okay, newperm = %" PRIoMAX ", stat = %" PRIoMAX "\n", (uintmax_t)(newperm & 07777), (uintmax_t)(dstat->st_mode & 07777));
         cfPS(cf_verbose, CF_NOP, "", pp, attr, " -> File permissions on %s as promised\n", file);
     }
     else
     {
-        CfDebug("Trying to fix mode...newperm = %jo, stat = %jo\n", (uintmax_t)(newperm & 07777), (uintmax_t)(dstat->st_mode & 07777));
+        CfDebug("Trying to fix mode...newperm = %" PRIoMAX ", stat = %" PRIoMAX "\n", (uintmax_t)(newperm & 07777), (uintmax_t)(dstat->st_mode & 07777));
 
         switch (attr.transaction.action)
         {
@@ -2274,7 +2219,7 @@ static void Unix_VerifyFileAttributes(char *file, struct stat *dstat, Attributes
             break;
 
         default:
-            FatalError("cfengine: internal error Unix_VerifyFileAttributes(): illegal file action\n");
+            FatalError("cfengine: internal error VerifyFileAttributes(): illegal file action\n");
         }
     }
 
@@ -2322,7 +2267,7 @@ static void Unix_VerifyFileAttributes(char *file, struct stat *dstat, Attributes
             break;
 
         default:
-            FatalError("cfengine: internal error Unix_VerifyFileAttributes() illegal file action\n");
+            FatalError("cfengine: internal error VerifyFileAttributes() illegal file action\n");
         }
     }
 # endif
@@ -2340,13 +2285,13 @@ static void Unix_VerifyFileAttributes(char *file, struct stat *dstat, Attributes
     }
 
     umask(maskvalue);
-    CfDebug("Unix_VerifyFileAttributes(Done)\n");
+    CfDebug("VerifyFileAttributes(Done)\n");
 }
 
 /*****************************************************************************/
 
-static void Unix_VerifyCopiedFileAttributes(char *file, struct stat *dstat, struct stat *sstat, Attributes attr,
-                                            Promise *pp)
+void VerifyCopiedFileAttributes(char *file, struct stat *dstat, struct stat *sstat, Attributes attr,
+                                Promise *pp, const ReportContext *report_context)
 {
     mode_t newplus, newminus;
     uid_t save_uid;
@@ -2354,7 +2299,7 @@ static void Unix_VerifyCopiedFileAttributes(char *file, struct stat *dstat, stru
 
 // If we get here, there is both a src and dest file
 
-    CfDebug("VerifyCopiedFile(%s,+%jo,-%jo)\n", file, (uintmax_t)attr.perms.plus, (uintmax_t)attr.perms.minus);
+    CfDebug("VerifyCopiedFile(%s,+%" PRIoMAX ",-%" PRIoMAX ")\n", file, (uintmax_t)attr.perms.plus, (uintmax_t)attr.perms.minus);
 
     save_uid = (attr.perms.owners)->uid;
     save_gid = (attr.perms.groups)->gid;
@@ -2380,7 +2325,7 @@ static void Unix_VerifyCopiedFileAttributes(char *file, struct stat *dstat, stru
         newminus = ~newplus & 07777;
         attr.perms.plus = newplus;
         attr.perms.minus = newminus;
-        VerifyFileAttributes(file, dstat, attr, pp);
+        VerifyFileAttributes(file, dstat, attr, pp, report_context);
     }
     else
     {
@@ -2400,7 +2345,7 @@ static void Unix_VerifyCopiedFileAttributes(char *file, struct stat *dstat, stru
             newminus = ~(newplus & ~(attr.perms.minus)) & 07777;
             attr.perms.plus = newplus;
             attr.perms.minus = newminus;
-            VerifyFileAttributes(file, dstat, attr, pp);
+            VerifyFileAttributes(file, dstat, attr, pp, report_context);
         }
     }
 
@@ -2465,3 +2410,215 @@ void AddSimpleGidItem(GidList ** gidlist, gid_t gid, char *gidname)
 }
 
 #endif /* NOT MINGW */
+
+/*********************************************************************/
+
+int SaveAsFile(SaveCallbackFn callback, void *param, const char *file, Attributes a, Promise *pp,
+                       const ReportContext *report_context)
+{
+    struct stat statbuf;
+    char new[CF_BUFSIZE], backup[CF_BUFSIZE];
+    mode_t mask;
+    char stamp[CF_BUFSIZE];
+    time_t stamp_now;
+
+#ifdef WITH_SELINUX
+    int selinux_enabled = 0;
+    security_context_t scontext = NULL;
+
+    selinux_enabled = (is_selinux_enabled() > 0);
+
+    if (selinux_enabled)
+    {
+        /* get current security context */
+        getfilecon(file, &scontext);
+    }
+#endif
+
+    stamp_now = time((time_t *) NULL);
+
+    if (cfstat(file, &statbuf) == -1)
+    {
+        cfPS(cf_error, CF_FAIL, "stat", pp, a, " !! Can no longer access file %s, which needed editing!\n", file);
+        return false;
+    }
+
+    strcpy(backup, file);
+
+    if (a.edits.backup == cfa_timestamp)
+    {
+        snprintf(stamp, CF_BUFSIZE, "_%jd_%s", (intmax_t) CFSTARTTIME, CanonifyName(cf_ctime(&stamp_now)));
+        strcat(backup, stamp);
+    }
+
+    strcat(backup, ".cf-before-edit");
+
+    strcpy(new, file);
+    strcat(new, ".cf-after-edit");
+    unlink(new);                /* Just in case of races */
+
+    if ((*callback)(new, file, param, a, pp) == false)
+    {
+        return false;
+    }
+
+    if (cf_rename(file, backup) == -1)
+    {
+        cfPS(cf_error, CF_FAIL, "cf_rename", pp, a,
+             " !! Can't rename %s to %s - so promised edits could not be moved into place\n", file, backup);
+        return false;
+    }
+
+    if (a.edits.backup == cfa_rotate)
+    {
+        RotateFiles(backup, a.edits.rotate);
+        unlink(backup);
+    }
+
+    if (a.edits.backup != cfa_nobackup)
+    {
+        if (ArchiveToRepository(backup, a, pp, report_context))
+        {
+            unlink(backup);
+        }
+    }
+
+    else
+    {
+        unlink(backup);
+    }
+
+    if (cf_rename(new, file) == -1)
+    {
+        cfPS(cf_error, CF_FAIL, "cf_rename", pp, a,
+             " !! Can't rename %s to %s - so promised edits could not be moved into place\n", new, file);
+        return false;
+    }
+
+    mask = umask(0);
+    cf_chmod(file, statbuf.st_mode);    /* Restore file permissions etc */
+    chown(file, statbuf.st_uid, statbuf.st_gid);
+    umask(mask);
+
+#ifdef WITH_SELINUX
+    if (selinux_enabled)
+    {
+        /* restore file context */
+        setfilecon(file, scontext);
+    }
+#endif
+
+    return true;
+}
+
+/*********************************************************************/
+
+bool SaveItemListCallback(const char *dest_filename, const char *orig_filename, void *param, Attributes a, Promise *pp)
+{
+    Item *liststart = param, *ip;
+    FILE *fp;
+
+    //saving list to file
+    if ((fp = fopen(dest_filename, "w")) == NULL)
+    {
+        cfPS(cf_error, CF_FAIL, "fopen", pp, a, "Couldn't write file %s after editing\n", dest_filename);
+        return false;
+    }
+
+    for (ip = liststart; ip != NULL; ip = ip->next)
+    {
+        fprintf(fp, "%s\n", ip->name);
+    }
+
+    if (fclose(fp) == -1)
+    {
+        cfPS(cf_error, CF_FAIL, "fclose", pp, a, "Unable to close file while writing");
+        return false;
+    }
+
+    cfPS(cf_inform, CF_CHG, "", pp, a, " -> Edited file %s \n", orig_filename);
+    return true;
+}
+
+/*********************************************************************/
+
+int SaveItemListAsFile(Item *liststart, const char *file, Attributes a, Promise *pp,
+                       const ReportContext *report_context)
+{
+    return SaveAsFile(&SaveItemListCallback, liststart, file, a, pp, report_context);
+}
+
+/*********************************************************************/
+
+int LoadFileAsItemList(Item **liststart, const char *file, Attributes a, const Promise *pp)
+{
+    FILE *fp;
+    struct stat statbuf;
+    char line[CF_BUFSIZE], concat[CF_BUFSIZE];
+    int join = false;
+
+    if (cfstat(file, &statbuf) == -1)
+    {
+        CfOut(cf_verbose, "stat", " ** Information: the proposed file \"%s\" could not be loaded", file);
+        return false;
+    }
+
+    if (a.edits.maxfilesize != 0 && statbuf.st_size > a.edits.maxfilesize)
+    {
+        CfOut(cf_inform, "", " !! File %s is bigger than the limit edit.max_file_size = %jd > %d bytes\n", file,
+              (intmax_t) statbuf.st_size, a.edits.maxfilesize);
+        return (false);
+    }
+
+    if (!S_ISREG(statbuf.st_mode))
+    {
+        cfPS(cf_inform, CF_INTERPT, "", pp, a, "%s is not a plain file\n", file);
+        return false;
+    }
+
+    if ((fp = fopen(file, "r")) == NULL)
+    {
+        cfPS(cf_inform, CF_INTERPT, "fopen", pp, a, "Couldn't read file %s for editing\n", file);
+        return false;
+    }
+
+    memset(line, 0, CF_BUFSIZE);
+    memset(concat, 0, CF_BUFSIZE);
+
+    while (!feof(fp))
+    {
+        CfReadLine(line, CF_BUFSIZE - 1, fp);
+
+        if (a.edits.joinlines && *(line + strlen(line) - 1) == '\\')
+        {
+            join = true;
+        }
+        else
+        {
+            join = false;
+        }
+
+        if (join)
+        {
+            *(line + strlen(line) - 1) = '\0';
+            JoinSuffix(concat, line);
+        }
+        else
+        {
+            JoinSuffix(concat, line);
+
+            if (!feof(fp) || (strlen(concat) != 0))
+            {
+                AppendItem(liststart, concat, NULL);
+            }
+
+            concat[0] = '\0';
+            join = false;
+        }
+
+        line[0] = '\0';
+    }
+
+    fclose(fp);
+    return (true);
+}

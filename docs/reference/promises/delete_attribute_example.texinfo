@@ -1,0 +1,12 @@
+
+@verbatim
+
+bundle edit_xml example
+  {
+  delete_attribute:
+    "name"
+
+    select_xpath => "/Server/Service/Engine/Host";
+  }
+
+@end verbatim

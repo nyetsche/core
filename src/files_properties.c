@@ -23,14 +23,25 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: files_properties.c                                                  */
-/*                                                                           */
-/*****************************************************************************/
-
 #include "cf3.defs.h"
-#include "cf3.extern.h"
+
+#include "files_names.h"
+#include "files_interfaces.h"
+#include "item_lib.h"
+#include "cfstream.h"
+
+static Item *SUSPICIOUSLIST = NULL;
+
+void AddFilenameToListOfSuspicious(const char *pattern)
+{
+    PrependItem(&SUSPICIOUSLIST, pattern, NULL);
+}
+
+bool SuspiciousFile(const char *filename)
+{
+    return IsItemIn(SUSPICIOUSLIST, filename);
+}
+
 
 /*********************************************************************/
 /* Files to be ignored when parsing directories                      */
@@ -42,7 +53,6 @@ int ConsiderFile(const char *nodename, char *path, Attributes attr, Promise *pp)
 {
     int i;
     struct stat statbuf;
-    char vbuff[CF_BUFSIZE];
     const char *sp;
 
     static char *skipfiles[] =
@@ -60,7 +70,7 @@ int ConsiderFile(const char *nodename, char *path, Attributes attr, Promise *pp)
         return true;
     }
 
-    if (IsItemIn(SUSPICIOUSLIST, nodename))
+    if (SuspiciousFile(nodename))
     {
         struct stat statbuf;
 
@@ -105,25 +115,26 @@ int ConsiderFile(const char *nodename, char *path, Attributes attr, Promise *pp)
         }
     }
 
-    strcpy(vbuff, path);
-    AddSlash(vbuff);
-    strcat(vbuff, nodename);
+    char buf[CF_BUFSIZE];
+
+    snprintf(buf, sizeof(buf), "%s/%s", path, nodename);
+    MapName(buf);
 
     for (sp = nodename; *sp != '\0'; sp++)      /* Check for files like ".. ." */
     {
-        if ((*sp != '.') && !isspace(*sp))
+        if ((*sp != '.') && (!isspace((int)*sp)))
         {
             return true;
         }
     }
 
-    if (cf_lstat(vbuff, &statbuf, attr, pp) == -1)
+    if (cf_lstat(buf, &statbuf, attr, pp) == -1)
     {
-        CfOut(cf_verbose, "lstat", "Couldn't stat %s", vbuff);
+        CfOut(cf_verbose, "lstat", "Couldn't stat %s", buf);
         return true;
     }
 
-    if (statbuf.st_size == 0 && !(VERBOSE || INFORM))   /* No sense in warning about empty files */
+    if ((statbuf.st_size == 0) && (!(VERBOSE || INFORM)))   /* No sense in warning about empty files */
     {
         return false;
     }
@@ -149,7 +160,7 @@ int ConsiderFile(const char *nodename, char *path, Attributes attr, Promise *pp)
 
 void SetSearchDevice(struct stat *sb, Promise *pp)
 {
-    CfDebug("Registering root device as %jd\n", (intmax_t) sb->st_dev);
+    CfDebug("Registering root device as %" PRIdMAX "\n", (intmax_t) sb->st_dev);
     pp->rootdevice = sb->st_dev;
 }
 

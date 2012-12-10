@@ -23,16 +23,14 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: fncall.c                                                            */
-/*                                                                           */
-/* Created: Wed Aug  8 14:45:53 2007                                         */
-/*                                                                           */
-/*****************************************************************************/
+#include "fncall.h"
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "env_context.h"
+#include "files_names.h"
+#include "expand.h"
+#include "unix.h"
+#include "cfstream.h"
+#include "args.h"
 
 #include <assert.h>
 
@@ -62,7 +60,7 @@ int IsBuiltinFnCall(Rval rval)
 
 /*******************************************************************/
 
-FnCall *NewFnCall(char *name, Rlist *args)
+FnCall *NewFnCall(const char *name, Rlist *args)
 {
     FnCall *fp;
 
@@ -72,7 +70,6 @@ FnCall *NewFnCall(char *name, Rlist *args)
 
     fp->name = xstrdup(name);
     fp->args = args;
-    fp->argc = RlistLen(args);
 
     CfDebug("Installed ");
     if (DEBUG)
@@ -85,7 +82,7 @@ FnCall *NewFnCall(char *name, Rlist *args)
 
 /*******************************************************************/
 
-FnCall *CopyFnCall(FnCall *f)
+FnCall *CopyFnCall(const FnCall *f)
 {
     CfDebug("CopyFnCall()\n");
     return NewFnCall(f->name, CopyRlist(f->args));
@@ -110,7 +107,7 @@ void DeleteFnCall(FnCall *fp)
 
 /*********************************************************************/
 
-FnCall *ExpandFnCall(char *contextid, FnCall *f, int expandnaked)
+FnCall *ExpandFnCall(const char *contextid, FnCall *f, int expandnaked)
 {
     CfDebug("ExpandFnCall()\n");
 //return NewFnCall(f->name,ExpandList(contextid,f->args,expandnaked));
@@ -119,7 +116,7 @@ FnCall *ExpandFnCall(char *contextid, FnCall *f, int expandnaked)
 
 /*******************************************************************/
 
-int PrintFnCall(char *buffer, int bufsize, FnCall *fp)
+int PrintFnCall(char *buffer, int bufsize, const FnCall *fp)
 {
     Rlist *rp;
     char work[CF_MAXVARSIZE];
@@ -156,10 +153,8 @@ int PrintFnCall(char *buffer, int bufsize, FnCall *fp)
 
 /*******************************************************************/
 
-void ShowFnCall(FILE *fout, FnCall *fp)
+void ShowFnCall(FILE *fout, const FnCall *fp)
 {
-    Rlist *rp;
-
     if (XML)
     {
         fprintf(fout, "%s(", fp->name);
@@ -169,7 +164,7 @@ void ShowFnCall(FILE *fout, FnCall *fp)
         fprintf(fout, "%s(", fp->name);
     }
 
-    for (rp = fp->args; rp != NULL; rp = rp->next)
+    for (const Rlist *rp = fp->args; rp != NULL; rp = rp->next)
     {
         switch (rp->type)
         {
@@ -208,7 +203,7 @@ enum cfdatatype FunctionReturnType(const char *name)
 
 /*******************************************************************/
 
-FnCallResult EvaluateFunctionCall(FnCall *fp, Promise *pp)
+FnCallResult EvaluateFunctionCall(FnCall *fp, const Promise *pp)
 {
     Rlist *expargs;
     const FnCallType *this = FindFunction(fp->name);
@@ -239,7 +234,7 @@ FnCallResult EvaluateFunctionCall(FnCall *fp, Promise *pp)
 
 /* If the container classes seem not to be defined at this stage, then don't try to expand the function */
 
-    if ((pp != NULL) && !IsDefinedClass(pp->classes))
+    if ((pp != NULL) && !IsDefinedClass(pp->classes, pp->namespace))
     {
         return (FnCallResult) { FNCALL_FAILURE, { CopyFnCall(fp), CF_FNCALL } };
     }
@@ -252,6 +247,15 @@ FnCallResult EvaluateFunctionCall(FnCall *fp, Promise *pp)
         return (FnCallResult) { FNCALL_FAILURE, { CopyFnCall(fp), CF_FNCALL } };
     }
 
+    if (pp != NULL)
+    {
+        fp->namespace = pp->namespace;
+    }
+    else
+    {
+        fp->namespace = "default";
+    }
+    
     FnCallResult result = CallFunction(this, fp, expargs);
 
     if (result.status == FNCALL_FAILURE)
@@ -284,9 +288,9 @@ const FnCallType *FindFunction(const char *name)
 
 /*****************************************************************************/
 
-void FnCallPrint(Writer *writer, FnCall *call)
+void FnCallPrint(Writer *writer, const FnCall *call)
 {
-    for (Rlist *rp = call->args; rp != NULL; rp = rp->next)
+    for (const Rlist *rp = call->args; rp != NULL; rp = rp->next)
     {
         switch (rp->type)
         {
@@ -307,7 +311,7 @@ void FnCallPrint(Writer *writer, FnCall *call)
 
 /*****************************************************************************/
 
-JsonElement *FnCallToJson(FnCall *fp)
+JsonElement *FnCallToJson(const FnCall *fp)
 {
     assert(fp);
 
@@ -316,7 +320,7 @@ JsonElement *FnCallToJson(FnCall *fp)
     JsonObjectAppendString(object, "name", fp->name);
     JsonObjectAppendString(object, "type", "function-call");
 
-    JsonElement *argsArray = JsonArrayCreate(fp->argc);
+    JsonElement *argsArray = JsonArrayCreate(5);
 
     for (Rlist *rp = fp->args; rp != NULL; rp = rp->next)
     {

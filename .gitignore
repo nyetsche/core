@@ -42,25 +42,42 @@ ylwrap
 docs/doxygen
 docs/guides/*.html
 docs/guides/*.pdf
+docs/guides/*.tmp
 docs/guides/cf3-solutions.texinfo
 docs/manpages/*.8
 docs/reference/cf3-Reference.html
 docs/reference/cf3-Reference.pdf
 docs/reference/cf3-Reference.texinfo
 docs/tools/build-solutions-guide
+docs/tools/build-solutions-guide.exe
+docs/tools/build-stdlib
+docs/tools/build-stdlib.exe
 
 # binaries
 
 src/cf-agent
+src/cf-agent.exe
 src/cf-execd
+src/cf-execd.exe
 src/cf-hub
+src/cf-hub.exe
 src/cf-key
+src/cf-key.exe
 src/cf-know
+src/cf-know.exe
 src/cf-monitord
+src/cf-monitord.exe
 src/cf-promises
+src/cf-promises.exe
 src/cf-report
+src/cf-report.exe
 src/cf-runagent
+src/cf-runagent.exe
 src/cf-serverd
+src/cf-serverd.exe
+src/cf-gendoc
+src/cf-gendoc.exe
+ext/rpmvercmp
 
 # autogen
 
@@ -77,7 +94,11 @@ tests/acceptance/*.log
 tests/acceptance/.succeeded
 tests/acceptance/workdir
 tests/acceptance/mock-package-manager
+tests/acceptance/mock-package-manager.exe
 tests/acceptance/dnswrapper.so
+tests/*/*.xml
+tests/*/xml.tmp
+tests/*/xml_tmp_*
 
 # unit tests
 
@@ -103,7 +124,6 @@ coverage-html/
 # links
 
 nova
-constellation
 galaxy
 
 # tags
@@ -115,7 +135,7 @@ cscope.*
 
 *~
 \#*#
-src/.dir-locals.el
+.dir-locals.el
 
 # eclipse
 
@@ -130,3 +150,8 @@ core.creator
 core.creator.user
 core.files
 core.includes
+*.autosave
+
+# Mac Finder
+
+.DS_Store

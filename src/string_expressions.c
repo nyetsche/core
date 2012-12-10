@@ -22,18 +22,14 @@
   included file COSL.txt.
 */
 
-#ifdef HAVE_CONFIG_H
-# include <conf.h>
-#endif
+#include "cf3.defs.h"
+
+#include "bool.h"
+#include "string_expressions.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
-#include "bool.h"
-#include "string_expressions.h"
-#include "cf3.defs.h"
-#include "prototypes3.h"
 
 /* <qname> */
 
@@ -142,7 +138,7 @@ static bool ValidTokenCharacter(char c)
         return true;
     }
 
-    if (c == '_' || c == '[' || c == ']')
+    if (c == '_' || c == '[' || c == ']' || c == ':')
     {
         return true;
     }

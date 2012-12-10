@@ -23,17 +23,16 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: instrumentation.c                                                   */
-/*                                                                           */
-/*****************************************************************************/
+#include "instrumentation.h"
 
-#include "cf3.defs.h"
-#include "cf3.extern.h"
+#include "constraints.h"
+#include "dbm_api.h"
+#include "files_names.h"
+#include "item_lib.h"
+#include "cfstream.h"
+#include "string_lib.h"
 
 #include <math.h>
-#include "dbm_api.h"
 
 static void NotePerformance(char *eventname, time_t t, double value);
 
@@ -175,7 +174,7 @@ void NoteClassUsage(AlphaList baselist, int purge)
 
     for (ip = AlphaListIteratorNext(&it); ip != NULL; ip = AlphaListIteratorNext(&it))
     {
-        if (IGNORECLASS(ip->name))
+        if ((IGNORECLASS(ip->name)))
         {
             CfDebug("Ignoring class %s (not packing)", ip->name);
             continue;

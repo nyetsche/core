@@ -23,45 +23,48 @@
 
 */
 
-/*****************************************************************************/
-/*                                                                           */
-/* File: manual.c                                                            */
-/*                                                                           */
-/*****************************************************************************/
+#include "manual.h"
 
 #include "cf3.defs.h"
-#include "cf3.extern.h"
-#include "manual.h"
+
+#include "vars.h"
 #include "writer.h"
+#include "mod_knowledge.h"
+#include "mod_measurement.h"
+#include "mod_exec.h"
+#include "mod_access.h"
+#include "item_lib.h"
+#include "sort.h"
+#include "scope.h"
+#include "files_interfaces.h"
+#include "hashes.h"
+#include "cfstream.h"
 
 extern char BUILD_DIR[CF_BUFSIZE];
-extern char MANDIR[CF_BUFSIZE];
 
 static void TexinfoHeader(FILE *fout);
 static void TexinfoFooter(FILE *fout);
-static void TexinfoBodyParts(FILE *fout, const BodySyntax *bs, char *context);
-static void TexinfoSubBodyParts(FILE *fout, BodySyntax *bs);
+static void TexinfoBodyParts(const char *source_dir, FILE *fout, const BodySyntax *bs, const char *context);
+static void TexinfoSubBodyParts(const char *source_dir, FILE *fout, BodySyntax *bs);
 static void TexinfoShowRange(FILE *fout, char *s, enum cfdatatype type);
-static void IncludeManualFile(FILE *fout, char *filename);
-static void TexinfoPromiseTypesFor(FILE *fout, SubTypeSyntax *st);
-static void TexinfoSpecialFunction(FILE *fout, FnCallType fn);
-static void TexinfoVariables(FILE *fout, char *scope);
+static void IncludeManualFile(const char *source_dir, FILE *fout, char *filename);
+static void TexinfoPromiseTypesFor(const char *source_dir, FILE *fout, const SubTypeSyntax *st);
+static void TexinfoSpecialFunction(const char *source_dir, FILE *fout, FnCallType fn);
+static void TexinfoVariables(const char *source_dir, FILE *fout, char *scope);
 static char *TexInfoEscape(char *s);
 static void PrintPattern(FILE *fout, const char *pattern);
 
 /*****************************************************************************/
 
-void TexinfoManual(char *mandir)
+void TexinfoManual(const char *source_dir, const char *output_file)
 {
     char filename[CF_BUFSIZE];
-    SubTypeSyntax *st;
+    const SubTypeSyntax *st;
     Item *done = NULL;
     FILE *fout;
     int i;
 
-    snprintf(filename, CF_BUFSIZE - 1, "%scf3-Reference.texinfo", BUILD_DIR);
-
-    if ((fout = fopen(filename, "w")) == NULL)
+    if ((fout = fopen(output_file, "w")) == NULL)
     {
         CfOut(cf_error, "fopen", "Unable to open %s for writing\n", filename);
         return;
@@ -76,7 +79,7 @@ void TexinfoManual(char *mandir)
     fprintf(fout, "@c *****************************************************\n");
 
     fprintf(fout, "@node Getting started\n@chapter CFEngine %s -- Getting started\n\n", Version());
-    IncludeManualFile(fout, "reference_basics.texinfo");
+    IncludeManualFile(source_dir, fout, "reference_basics.texinfo");
 
 /* Control promises */
 
@@ -85,25 +88,25 @@ void TexinfoManual(char *mandir)
     fprintf(fout, "@c *****************************************************\n");
 
     fprintf(fout, "@node Control Promises\n@chapter Control promises\n\n");
-    IncludeManualFile(fout, "reference_control_intro.texinfo");
+    IncludeManualFile(source_dir, fout, "reference_control_intro.texinfo");
 
     fprintf(fout, "@menu\n");
-    for (i = 0; CF_ALL_BODIES[i].btype != NULL; ++i)
+    for (i = 0; CF_ALL_BODIES[i].bundle_type != NULL; ++i)
     {
-        fprintf(fout, "* control %s::\n", CF_ALL_BODIES[i].btype);
+        fprintf(fout, "* control %s::\n", CF_ALL_BODIES[i].bundle_type);
     }
     fprintf(fout, "@end menu\n");
 
-    for (i = 0; CF_ALL_BODIES[i].btype != NULL; i++)
+    for (i = 0; CF_ALL_BODIES[i].bundle_type != NULL; i++)
     {
-        fprintf(fout, "@node control %s\n@section @code{%s} control promises\n\n", CF_ALL_BODIES[i].btype,
-                CF_ALL_BODIES[i].btype);
-        snprintf(filename, CF_BUFSIZE - 1, "control/%s_example.texinfo", CF_ALL_BODIES[i].btype);
-        IncludeManualFile(fout, filename);
-        snprintf(filename, CF_BUFSIZE - 1, "control/%s_notes.texinfo", CF_ALL_BODIES[i].btype);
-        IncludeManualFile(fout, filename);
+        fprintf(fout, "@node control %s\n@section @code{%s} control promises\n\n", CF_ALL_BODIES[i].bundle_type,
+                CF_ALL_BODIES[i].bundle_type);
+        snprintf(filename, CF_BUFSIZE - 1, "control/%s_example.texinfo", CF_ALL_BODIES[i].bundle_type);
+        IncludeManualFile(source_dir, fout, filename);
+        snprintf(filename, CF_BUFSIZE - 1, "control/%s_notes.texinfo", CF_ALL_BODIES[i].bundle_type);
+        IncludeManualFile(source_dir, fout, filename);
 
-        TexinfoBodyParts(fout, CF_ALL_BODIES[i].bs, CF_ALL_BODIES[i].btype);
+        TexinfoBodyParts(source_dir, fout, CF_ALL_BODIES[i].bs, CF_ALL_BODIES[i].bundle_type);
     }
 
 /* Components */
@@ -112,46 +115,68 @@ void TexinfoManual(char *mandir)
     {
         st = (CF_ALL_SUBTYPES[i]);
 
-        if (st == CF_COMMON_SUBTYPES || st == CF_EXEC_SUBTYPES || st == CF_REMACCESS_SUBTYPES
-            || st == CF_KNOWLEDGE_SUBTYPES || st == CF_MEASUREMENT_SUBTYPES)
+        if ((st == CF_COMMON_SUBTYPES) || (st == CF_EXEC_SUBTYPES) || (st == CF_REMACCESS_SUBTYPES)
+            || (st == CF_KNOWLEDGE_SUBTYPES) || (st == CF_MEASUREMENT_SUBTYPES))
 
         {
-            CfOut(cf_verbose, "", "Dealing with chapter / bundle type %s\n", st->btype);
+            CfOut(cf_verbose, "", "Dealing with chapter / bundle type %s\n", st->bundle_type);
             fprintf(fout, "@c *****************************************************\n");
             fprintf(fout, "@c * CHAPTER \n");
             fprintf(fout, "@c *****************************************************\n");
 
-            if (strcmp(st->btype, "*") == 0)
+            if (strcmp(st->bundle_type, "*") == 0)
             {
                 fprintf(fout, "@node Bundles for common\n@chapter Bundles of @code{common}\n\n");
             }
             else
             {
-                fprintf(fout, "@node Bundles for %s\n@chapter Bundles of @code{%s}\n\n", st->btype, st->btype);
+                fprintf(fout, "@node Bundles for %s\n@chapter Bundles of @code{%s}\n\n", st->bundle_type, st->bundle_type);
             }
         }
 
-        if (!IsItemIn(done, st->btype)) /* Avoid multiple reading if several modules */
+        if (!IsItemIn(done, st->bundle_type)) /* Avoid multiple reading if several modules */
         {
-            PrependItem(&done, st->btype, NULL);
-            snprintf(filename, CF_BUFSIZE - 1, "bundletypes/%s_example.texinfo", st->btype);
-            IncludeManualFile(fout, filename);
-            snprintf(filename, CF_BUFSIZE - 1, "bundletypes/%s_notes.texinfo", st->btype);
-            IncludeManualFile(fout, filename);
+            PrependItem(&done, st->bundle_type, NULL);
+            snprintf(filename, CF_BUFSIZE - 1, "bundletypes/%s_example.texinfo", st->bundle_type);
+            IncludeManualFile(source_dir, fout, filename);
+            snprintf(filename, CF_BUFSIZE - 1, "bundletypes/%s_notes.texinfo", st->bundle_type);
+            IncludeManualFile(source_dir, fout, filename);
 
             fprintf(fout, "@menu\n");
             for (int k = 0; k < CF3_MODULES; ++k)
             {
-                for (int j = 0; CF_ALL_SUBTYPES[k][j].btype != NULL; ++j)
+                for (int j = 0; CF_ALL_SUBTYPES[k][j].bundle_type != NULL; ++j)
                 {
-                    fprintf(fout, "* %s in %s promises::\n", CF_ALL_SUBTYPES[k][j].subtype,
-                            strcmp(CF_ALL_SUBTYPES[k][j].btype, "*") == 0 ? "common" : CF_ALL_SUBTYPES[k][j].btype);
+                    const char *constraint_type_name;
+                    if (strcmp(CF_ALL_SUBTYPES[k][j].subtype, "*") == 0)
+                    {
+                        constraint_type_name = "Miscellaneous";
+                    }
+                    else
+                    {
+                        constraint_type_name = CF_ALL_SUBTYPES[k][j].subtype;
+                    }
+
+                    const char *bundle_type_name;
+                    if (strcmp(CF_ALL_SUBTYPES[k][j].bundle_type, "*") == 0)
+                    {
+                        bundle_type_name = "common";
+                    }
+                    else
+                    {
+                        bundle_type_name = CF_ALL_SUBTYPES[k][j].bundle_type;
+                    }
+
+                    fprintf(fout, "* %s in %s promises: %s in %s promises\n", CF_ALL_SUBTYPES[k][j].subtype,
+                            bundle_type_name,
+                            constraint_type_name,
+                            bundle_type_name);
                 }
             }
             fprintf(fout, "@end menu\n");
         }
 
-        TexinfoPromiseTypesFor(fout, st);
+        TexinfoPromiseTypesFor(source_dir, fout, st);
     }
 
 /* Special functions */
@@ -175,12 +200,12 @@ void TexinfoManual(char *mandir)
 
     fprintf(fout, "@node Introduction to functions\n@section Introduction to functions\n\n");
 
-    IncludeManualFile(fout, "functions_intro.texinfo");
+    IncludeManualFile(source_dir, fout, "functions_intro.texinfo");
 
     for (i = 0; CF_FNCALL_TYPES[i].name != NULL; i++)
     {
         fprintf(fout, "@node Function %s\n@section Function %s \n\n", CF_FNCALL_TYPES[i].name, CF_FNCALL_TYPES[i].name);
-        TexinfoSpecialFunction(fout, CF_FNCALL_TYPES[i]);
+        TexinfoSpecialFunction(source_dir, fout, CF_FNCALL_TYPES[i]);
     }
 
 /* Special variables */
@@ -193,7 +218,7 @@ void TexinfoManual(char *mandir)
     fprintf(fout, "@node Special Variables\n@chapter Special Variables\n\n");
 
     static const char *scopes[] =
-{
+    {
         "const",
         "edit",
         "match",
@@ -215,9 +240,12 @@ void TexinfoManual(char *mandir)
     NewScope("edit");
     NewScalar("edit", "filename", "x", cf_str);
 
+    NewScope("match");
+    NewScalar("match", "0", "x", cf_str);
+
     for (const char **s = scopes; *s != NULL; ++s)
     {
-        TexinfoVariables(fout, (char *) *s);
+        TexinfoVariables(source_dir, fout, (char *) *s);
     }
 
 // Log files
@@ -228,7 +256,7 @@ void TexinfoManual(char *mandir)
     fprintf(fout, "@c *****************************************************\n");
 
     fprintf(fout, "@node Logs and records\n@chapter Logs and records\n\n");
-    IncludeManualFile(fout, "reference_logs.texinfo");
+    IncludeManualFile(source_dir, fout, "reference_logs.texinfo");
 
     TexinfoFooter(fout);
 
@@ -254,16 +282,13 @@ static void TexinfoHeader(FILE *fout)
             "@c\n"
             "@c ***********************************************************************\n"
             "@c %%** start of header\n"
-            "@setfilename cf3-reference.info\n"
+            "@setfilename cf3-Reference.info\n"
             "@settitle CFEngine reference manual\n"
             "@setchapternewpage odd\n"
             "@c %%** end of header\n"
             "@titlepage\n"
             "@title CFEngine Reference Manual\n" "@subtitle Auto generated, self-healing knowledge\n" "@subtitle %s\n"
 #ifdef HAVE_NOVA
-            "@subtitle %s\n"
-#endif
-#ifdef HAVE_CONSTELLATION
             "@subtitle %s\n"
 #endif
             "@author cfengine.com\n"
@@ -316,9 +341,6 @@ static void TexinfoHeader(FILE *fout)
 #ifdef HAVE_NOVA
             , Nova_NameVersion()
 #endif
-#ifdef HAVE_CONSTELLATION
-            , Constellation_NameVersion()
-#endif
         );
 }
 
@@ -357,35 +379,49 @@ static void TexinfoFooter(FILE *fout)
 
 /*****************************************************************************/
 
-static void TexinfoPromiseTypesFor(FILE *fout, SubTypeSyntax *st)
+static void TexinfoPromiseTypesFor(const char *source_dir, FILE *fout, const SubTypeSyntax *st)
 {
     int j;
     char filename[CF_BUFSIZE];
 
 /* Each array element is SubtypeSyntax representing an agent-promise assoc */
 
-    for (j = 0; st[j].btype != NULL; j++)
+    for (j = 0; st[j].bundle_type != NULL; j++)
     {
         CfOut(cf_verbose, "", " - Dealing with promise type %s\n", st[j].subtype);
 
-        if (strcmp("*", st[j].btype) == 0)
+        if ((strcmp("*", st[j].subtype) == 0) && (strcmp("*", st[j].bundle_type) == 0))
         {
-            fprintf(fout, "\n\n@node %s in common promises\n@section @code{%s} promises\n\n", st[j].subtype,
+            fprintf(fout, "\n\n@node Miscellaneous in common promises\n@section @code{%s} promises\n\n", 
                     st[j].subtype);
             snprintf(filename, CF_BUFSIZE - 1, "promise_common_intro.texinfo");
         }
+        else if ((strcmp("*", st[j].subtype) == 0) && ((strcmp("edit_line", st[j].bundle_type) == 0) || (strcmp("edit_xml", st[j].bundle_type) == 0)))
+        {
+            fprintf(fout, "\n\n@node Miscellaneous in %s promises\n@section Miscelleneous in @code{%s} promises\n\n", st[j].bundle_type, st[j].bundle_type);
+            snprintf(filename, CF_BUFSIZE - 1, "promises/%s_intro.texinfo", st[j].bundle_type);
+
+        }
         else
         {
-            fprintf(fout, "\n\n@node %s in %s promises\n@section @code{%s} promises in @samp{%s}\n\n", st[j].subtype,
-                    st[j].btype, st[j].subtype, st[j].btype);
+            if (strcmp("*", st[j].bundle_type) == 0)
+            {
+                fprintf(fout, "\n\n@node %s in common promises\n@section @code{%s} promises in @samp{%s}\n\n", st[j].subtype,
+                    st[j].subtype, st[j].bundle_type);            
+            }
+            else
+            {
+                fprintf(fout, "\n\n@node %s in %s promises\n@section @code{%s} promises in @samp{%s}\n\n", st[j].subtype,
+                    st[j].bundle_type, st[j].subtype, st[j].bundle_type);
+            }
             snprintf(filename, CF_BUFSIZE - 1, "promises/%s_intro.texinfo", st[j].subtype);
-            IncludeManualFile(fout, filename);
+            IncludeManualFile(source_dir, fout, filename);
             snprintf(filename, CF_BUFSIZE - 1, "promises/%s_example.texinfo", st[j].subtype);
-            IncludeManualFile(fout, filename);
+            IncludeManualFile(source_dir, fout, filename);
             snprintf(filename, CF_BUFSIZE - 1, "promises/%s_notes.texinfo", st[j].subtype);
         }
-        IncludeManualFile(fout, filename);
-        TexinfoBodyParts(fout, st[j].bs, st[j].subtype);
+        IncludeManualFile(source_dir, fout, filename);
+        TexinfoBodyParts(source_dir, fout, st[j].bs, st[j].subtype);
     }
 }
 
@@ -393,7 +429,7 @@ static void TexinfoPromiseTypesFor(FILE *fout, SubTypeSyntax *st)
 /* Level                                                                     */
 /*****************************************************************************/
 
-static void TexinfoBodyParts(FILE *fout, const BodySyntax *bs, char *context)
+static void TexinfoBodyParts(const char *source_dir, FILE *fout, const BodySyntax *bs, const char *context)
 {
     int i;
     char filename[CF_BUFSIZE];
@@ -403,14 +439,17 @@ static void TexinfoBodyParts(FILE *fout, const BodySyntax *bs, char *context)
         return;
     }
 
-    fprintf(fout, "@menu\n");
-
-    for (i = 0; bs[i].lval != NULL; ++i)
+    if (bs[0].lval != NULL)
     {
-        fprintf(fout, "* %s in %s::\n", bs[i].lval, context);
-    }
+        fprintf(fout, "@menu\n");
 
-    fprintf(fout, "@end menu\n");
+        for (i = 0; bs[i].lval != NULL; ++i)
+        {
+            fprintf(fout, "* %s in %s::\n", bs[i].lval, context);
+        }
+
+        fprintf(fout, "@end menu\n");
+    }
 
     for (i = 0; bs[i].lval != NULL; i++)
     {
@@ -425,7 +464,7 @@ static void TexinfoBodyParts(FILE *fout, const BodySyntax *bs, char *context)
         {
             fprintf(fout, "\n\n@node %s in %s\n@subsection @code{%s} (body template)\n@noindent @b{Type}: %s\n\n",
                     bs[i].lval, context, bs[i].lval, CF_DATATYPES[bs[i].dtype]);
-            TexinfoSubBodyParts(fout, (BodySyntax *) bs[i].range);
+            TexinfoSubBodyParts(source_dir, fout, (BodySyntax *) bs[i].range);
         }
         else
         {
@@ -443,28 +482,30 @@ static void TexinfoBodyParts(FILE *fout, const BodySyntax *bs, char *context)
             fprintf(fout, "\n@noindent @b{Synopsis}: %s\n\n", bs[i].description);
             fprintf(fout, "\n@noindent @b{Example}:@*\n");
             snprintf(filename, CF_BUFSIZE - 1, "bodyparts/%s_example.texinfo", bs[i].lval);
-            IncludeManualFile(fout, filename);
+            IncludeManualFile(source_dir, fout, filename);
             fprintf(fout, "\n@noindent @b{Notes}:@*\n");
             snprintf(filename, CF_BUFSIZE - 1, "bodyparts/%s_notes.texinfo", bs[i].lval);
-            IncludeManualFile(fout, filename);
+            IncludeManualFile(source_dir, fout, filename);
         }
     }
 }
 
 /*******************************************************************/
 
-static void TexinfoVariables(FILE *fout, char *scope)
+static void TexinfoVariables(const char *source_dir, FILE *fout, char *scope)
 {
     char filename[CF_BUFSIZE], varname[CF_BUFSIZE];
     Rlist *rp, *list = NULL;
     int i;
 
+    char *extra_mon[] = { "listening_udp4_ports", "listening_tcp4_ports", "listening_udp6_ports", "listening_tcp6_ports", NULL };
+    
     HashToList(GetScope(scope), &list);
     list = AlphaSortRListNames(list);
 
     fprintf(fout, "\n\n@node Variable context %s\n@section Variable context @code{%s}\n\n", scope, scope);
     snprintf(filename, CF_BUFSIZE - 1, "varcontexts/%s_intro.texinfo", scope);
-    IncludeManualFile(fout, filename);
+    IncludeManualFile(source_dir, fout, filename);
 
     fprintf(fout, "@menu\n");
 
@@ -477,6 +518,11 @@ static void TexinfoVariables(FILE *fout, char *scope)
     }
     else
     {
+        for (i = 0; extra_mon[i] != NULL; i++)        
+        {
+            fprintf(fout, "* Variable %s.%s::\n", "mon", extra_mon[i]);
+        }
+
         for (i = 0; i < CF_OBSERVABLES; ++i)
         {
             if (strcmp(OBS[i][0], "spare") == 0)
@@ -492,18 +538,26 @@ static void TexinfoVariables(FILE *fout, char *scope)
 
     fprintf(fout, "@end menu\n");
 
-    for (rp = list; rp != NULL; rp = rp->next)
+    if (strcmp(scope, "mon") != 0)
     {
-        fprintf(fout, "@node Variable %s.%s\n@subsection Variable %s.%s \n\n", scope, (char *) rp->item, scope,
-                (char *) rp->item);
-        snprintf(filename, CF_BUFSIZE - 1, "vars/%s_%s.texinfo", scope, (char *) rp->item);
-        IncludeManualFile(fout, filename);
+        for (rp = list; rp != NULL; rp = rp->next)
+        {
+            fprintf(fout, "@node Variable %s.%s\n@subsection Variable %s.%s \n\n", scope, (char *) rp->item, scope,
+                    (char *) rp->item);
+            snprintf(filename, CF_BUFSIZE - 1, "vars/%s_%s.texinfo", scope, (char *) rp->item);
+            IncludeManualFile(source_dir, fout, filename);
+        }
     }
-
-    DeleteRlist(list);
-
-    if (strcmp(scope, "mon") == 0)
+    else
     {
+        for (i = 0; extra_mon[i] != NULL; i++)        
+        {
+            fprintf(fout, "\n@node Variable %s.%s\n@subsection Variable %s.%s \n\n", "mon", extra_mon[i], "mon", extra_mon[i]);
+            fprintf(fout, "List variable containing an observational measure collected every 2.5 minutes from cf-monitord, description: port numbers that were observed to be set up to receive connections on the host concerned");
+
+        }
+
+    
         for (i = 0; i < CF_OBSERVABLES; i++)
         {
             if (strcmp(OBS[i][0], "spare") == 0)
@@ -528,6 +582,7 @@ static void TexinfoVariables(FILE *fout, char *scope)
         }
     }
 
+    DeleteRlist(list);
 }
 
 /*******************************************************************/
@@ -544,7 +599,7 @@ static void TexinfoShowRange(FILE *fout, char *s, enum cfdatatype type)
         return;
     }
 
-    if (type == cf_opts || type == cf_olist)
+    if ((type == cf_opts) || (type == cf_olist))
     {
         list = SplitStringAsRList(s, ',');
         fprintf(fout, "@noindent @b{Allowed input range}: @*\n@example");
@@ -565,7 +620,7 @@ static void TexinfoShowRange(FILE *fout, char *s, enum cfdatatype type)
 
 /*****************************************************************************/
 
-static void TexinfoSubBodyParts(FILE *fout, BodySyntax *bs)
+static void TexinfoSubBodyParts(const char *source_dir, FILE *fout, BodySyntax *bs)
 {
     int i;
     char filename[CF_BUFSIZE];
@@ -587,7 +642,7 @@ static void TexinfoSubBodyParts(FILE *fout, BodySyntax *bs)
         else if (bs[i].dtype == cf_body)
         {
             fprintf(fout, "@item @code{%s}\n@b{Type}: %s\n\n", bs[i].lval, CF_DATATYPES[bs[i].dtype]);
-            TexinfoSubBodyParts(fout, (BodySyntax *) bs[i].range);
+            TexinfoSubBodyParts(source_dir, fout, (BodySyntax *) bs[i].range);
         }
         else
         {
@@ -604,10 +659,10 @@ static void TexinfoSubBodyParts(FILE *fout, BodySyntax *bs)
 
             fprintf(fout, "\n@b{Example}:@*\n");
             snprintf(filename, CF_BUFSIZE - 1, "bodyparts/%s_example.texinfo", bs[i].lval);
-            IncludeManualFile(fout, filename);
+            IncludeManualFile(source_dir, fout, filename);
             fprintf(fout, "\n@b{Notes}:@*\n");
             snprintf(filename, CF_BUFSIZE - 1, "bodyparts/%s_notes.texinfo", bs[i].lval);
-            IncludeManualFile(fout, filename);
+            IncludeManualFile(source_dir, fout, filename);
         }
     }
 
@@ -626,11 +681,8 @@ static bool GenerateStub(const char *filename)
         return false;
     }
 
-#ifdef HAVE_CONSTELLATION
-    fprintf(fp, "\n@i{History}: Was introduced in %s, Nova %s, Constellation %s (%d)\n\n",
-            Version(), Nova_Version(), Constellation_Version(), BUILD_YEAR);
-#elif HAVE_NOVA
-    fprintf(fp, "\n@i{History}: Was introduced in %s, Nova %s (%d)\n\n", Version(), Nova_Version(), BUILD_YEAR);
+#ifdef HAVE_NOVA
+    fprintf(fp, "\n@i{History}: Was introduced in %s, Enterprise %s (%d)\n\n", Version(), Nova_Version(), BUILD_YEAR);
 #else
     fprintf(fp, "\n@i{History}: Was introduced in %s (%d)\n\n", Version(), BUILD_YEAR);
 #endif
@@ -642,7 +694,7 @@ static bool GenerateStub(const char *filename)
 
 /*****************************************************************************/
 
-char *ReadTexinfoFileF(const char *fmt, ...)
+char *ReadTexinfoFileF(const char *source_dir, const char *fmt, ...)
 {
     Writer *filenamew = StringWriter();
 
@@ -654,7 +706,7 @@ char *ReadTexinfoFileF(const char *fmt, ...)
     va_list ap;
 
     va_start(ap, fmt);
-    WriterWriteF(filenamew, "%s/", MANDIR);
+    WriterWriteF(filenamew, "%s/", source_dir);
     WriterWriteVF(filenamew, fmt, ap);
     va_end(ap);
 
@@ -685,7 +737,7 @@ char *ReadTexinfoFileF(const char *fmt, ...)
     buffer[file_size] = '\0';
     int cnt = fread(buffer, sizeof(char), file_size, fp);
 
-    if (ferror(fp) || cnt != file_size)
+    if ((ferror(fp)) || (cnt != file_size))
     {
         CfOut(cf_inform, "fread", "Could not read manual source %s\n", filename);
         free(buffer);
@@ -702,9 +754,9 @@ char *ReadTexinfoFileF(const char *fmt, ...)
 
 /*****************************************************************************/
 
-static void IncludeManualFile(FILE *fout, char *file)
+static void IncludeManualFile(const char *source_dir, FILE *fout, char *file)
 {
-    char *contents = ReadTexinfoFileF("%s", file);
+    char *contents = ReadTexinfoFileF(source_dir, "%s", file);
 
     if (contents)
     {
@@ -714,7 +766,7 @@ static void IncludeManualFile(FILE *fout, char *file)
 
 /*****************************************************************************/
 
-static void TexinfoSpecialFunction(FILE *fout, FnCallType fn)
+static void TexinfoSpecialFunction(const char *source_dir, FILE *fout, FnCallType fn)
 {
     char filename[CF_BUFSIZE];
     const FnCallArg *args = fn.args;
@@ -753,11 +805,11 @@ static void TexinfoSpecialFunction(FILE *fout, FnCallType fn)
     fprintf(fout, "\n@noindent @b{Example}:@*\n");
 
     snprintf(filename, CF_BUFSIZE - 1, "functions/%s_example.texinfo", fn.name);
-    IncludeManualFile(fout, filename);
+    IncludeManualFile(source_dir, fout, filename);
 
     fprintf(fout, "\n@noindent @b{Notes}:@*\n");
     snprintf(filename, CF_BUFSIZE - 1, "functions/%s_notes.texinfo", fn.name);
-    IncludeManualFile(fout, filename);
+    IncludeManualFile(source_dir, fout, filename);
 }
 
 /*****************************************************************************/
