@@ -129,6 +129,7 @@ galaxy
 # tags
 
 TAGS
+tags
 cscope.*
 
 # emacs
@@ -136,6 +137,9 @@ cscope.*
 *~
 \#*#
 .dir-locals.el
+
+# vim
+*.swp
 
 # eclipse
 
